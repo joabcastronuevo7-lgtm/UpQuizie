@@ -1,0 +1,17 @@
+# Node
+node_modules/
+dist/
+*.log
+package-lock.json
+
+# Go
+backend/api/bin/
+backend/api/upquizie-api
+
+# Env
+.env
+
+# Editor
+.DS_Store
+.idea/
+.vscode/
