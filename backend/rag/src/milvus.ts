@@ -100,12 +100,12 @@ export async function search(
   subjectId: string,
   vector: number[],
   topK = 5,
-  documentId = ""
+  documentIds: string[] = []
 ): Promise<SearchHit[]> {
   const c = await getClient();
   const filters = [];
   if (subjectId) filters.push(`subject_id == "${subjectId}"`);
-  if (documentId) filters.push(`document_id == "${documentId}"`);
+  if (documentIds.length) filters.push(`document_id in [${documentIds.map((id) => `"${id}"`).join(",")}]`);
   const res = await c.search({
     collection_name: COLLECTION,
     data: [vector],

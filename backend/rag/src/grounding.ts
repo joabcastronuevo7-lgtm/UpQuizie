@@ -83,6 +83,9 @@ export function validateGroundedQuestion(
   if (!question || typeof question.prompt !== "string" || question.prompt.trim().length < 8) {
     return { valid: false, reason: "missing question prompt" };
   }
+  if (question.prompt.trim().split(/\s+/).length > 70 || /\bpage\s+\d+\b/i.test(question.prompt)) {
+    return { valid: false, reason: "question prompt is too long or contains extraction artifacts" };
+  }
   if (/\baccording to\b|\buploaded document\b|\bsource (?:material|excerpt)\b|\bdocument (?:states|excerpt)\b/i.test(question.prompt)) {
     return { valid: false, reason: "question must not refer to its source document" };
   }
@@ -100,7 +103,7 @@ export function validateGroundedQuestion(
   }
   const promptTokens = meaningfulTokens(question.prompt);
   const quoteTokens = meaningfulTokens(quote);
-  if (promptTokens.size > 0 && ![...promptTokens].some((token) => quoteTokens.has(token))) {
+  if (expectedType !== "matching" && promptTokens.size > 0 && ![...promptTokens].some((token) => quoteTokens.has(token))) {
     return { valid: false, reason: "question has no substantive overlap with its evidence quote" };
   }
 

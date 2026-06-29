@@ -79,3 +79,27 @@ test("rejects document-referential question wording", () => {
   assert.equal(result.valid, false);
   assert.match(result.reason || "", /must not refer/);
 });
+
+test("rejects overly long question wording", () => {
+  const result = validateGroundedQuestion({
+    type: "mcq",
+    prompt: Array(75).fill("photosynthesis").join(" "),
+    options: ["chloroplast", "Mitochondria"], answer: { correct_index: 0 },
+    source_index: 1, source_quote: "Photosynthesis occurs in the chloroplast.",
+  }, "mcq", sources);
+  assert.equal(result.valid, false);
+  assert.match(result.reason || "", /too long/);
+});
+
+test("allows a concise generic matching instruction when every pair is grounded", () => {
+  const result = validateGroundedQuestion({
+    type: "matching", prompt: "Match each term with its corresponding statement.",
+    options: {
+      left: ["Photosynthesis", "Mitochondria"],
+      right: ["Mitochondria release energy from food", "Photosynthesis occurs in the chloroplast"],
+    },
+    answer: { pairs: [[0, 1], [1, 0]] }, source_index: 1,
+    source_quote: "Photosynthesis occurs in the chloroplast.",
+  }, "matching", sources);
+  assert.equal(result.valid, true);
+});

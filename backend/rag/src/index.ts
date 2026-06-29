@@ -90,7 +90,7 @@ function renderSources(sources: GroundingSource[]): string {
   ).join("\n\n---\n\n");
 }
 
-async function retrieveSources(subjectId: string, documentId: string, retrievalQuery: string): Promise<GroundingSource[]> {
+async function retrieveSources(subjectId: string, documentIds: string[], retrievalQuery: string): Promise<GroundingSource[]> {
   let pool: GroundingSource[] = [];
   try {
     const normalizedQuery = (retrievalQuery.trim() || "key concepts and definitions").toLowerCase().replace(/\s+/g, " ");
@@ -105,7 +105,7 @@ async function retrieveSources(subjectId: string, documentId: string, retrievalQ
         queryEmbeddingCache.set(normalizedQuery, qvec);
       }
     }
-    const hits = await search(subjectId, qvec, Math.max(12, RETRIEVAL_K * 3), documentId);
+    const hits = await search(subjectId, qvec, Math.max(12, RETRIEVAL_K * 3), documentIds);
     pool = hits.filter((hit) => Boolean(hit.text && hit.document_id));
   } catch (e) {
     console.warn("vector retrieval failed; using uploaded chunks from PostgreSQL", e);
@@ -114,8 +114,8 @@ async function retrieveSources(subjectId: string, documentId: string, retrievalQ
   // This fallback may reduce relevance, but it never permits ungrounded content.
   if (!pool.length) {
     const args: unknown[] = [subjectId];
-    const documentFilter = documentId ? " AND dc.document_id=$2" : "";
-    if (documentId) args.push(documentId);
+    const documentFilter = documentIds.length ? " AND dc.document_id = ANY($2::uuid[])" : "";
+    if (documentIds.length) args.push(documentIds);
     pool = await query<GroundingSource>(
       `SELECT dc.content AS text, dc.document_id::text, dc.chunk_index
          FROM document_chunks dc
@@ -158,53 +158,120 @@ function documentPhrases(text: string): string[] {
   const complexities = text.match(/O\([^)]{1,30}\)/g) || [];
   const headings = Array.from(text.matchAll(/(?:^|[•.;])\s*([A-Z][A-Za-z0-9 /-]{2,35}?)(?=\s*:|\s+-)/g), (match) => match[1].trim());
   const names = text.match(/\b[A-Z][A-Za-z-]{3,}(?:\s+[A-Z][A-Za-z-]{3,}){0,2}\b/g) || [];
-  return unique([...complexities, ...headings, ...names]).filter((value) => value.length <= 60);
+  const blocked = new Set(["example", "given", "input", "output", "code", "page", "solution"]);
+  return unique([...complexities, ...headings, ...names]).filter((value) =>
+    value.length <= 60 && !blocked.has(value.toLowerCase())
+  );
 }
 
-function evidenceWindow(text: string, phrase: string, radius = 180): string {
+function conciseEvidence(text: string, phrase: string): string {
   const index = text.toLowerCase().indexOf(phrase.toLowerCase());
-  if (index < 0) return text.slice(0, radius * 2).trim();
-  return text.slice(Math.max(0, index - radius), Math.min(text.length, index + phrase.length + radius)).trim();
+  if (index < 0) return "";
+  const units = text.split(/\s*•\s*|(?<=[.!?])\s+/).map((unit) => unit.trim()).filter(Boolean);
+  const unit = units.find((candidate) =>
+    candidate.toLowerCase().includes(phrase.toLowerCase()) &&
+    candidate.split(/\s+/).length >= 5 && candidate.split(/\s+/).length <= 32
+  );
+  if (unit) return unit;
+
+  // Preserve whole words around the answer when PDF extraction removed sentence boundaries.
+  const before = text.slice(0, index).trim().split(/\s+/).filter(Boolean).slice(-10);
+  const after = text.slice(index + phrase.length).trim().split(/\s+/).filter(Boolean).slice(0, 10);
+  return [...before, phrase, ...after].join(" ").trim();
+}
+
+function documentPairs(text: string): Array<{ left: string; right: string; evidence: string }> {
+  const pairs: Array<{ left: string; right: string; evidence: string }> = [];
+  const units = text.split(/\s*•\s*|(?<=[.!?])\s+/).map((unit) => unit.trim()).filter(Boolean);
+  for (const unit of units) {
+    const match = unit.match(/^([A-Za-z][A-Za-z0-9() /&+-]{2,40}):\s*(.{2,100})$/);
+    if (!match) continue;
+    const left = match[1].trim();
+    const right = match[2].trim().split(/\s+/).slice(0, 10).join(" ");
+    const key = `${left.toLowerCase()}|${right.toLowerCase()}`;
+    if (right.length >= 2 && !pairs.some((pair) => `${pair.left.toLowerCase()}|${pair.right.toLowerCase()}` === key)) {
+      pairs.push({ left, right, evidence: unit });
+    }
+  }
+  return pairs;
 }
 
 /** Creates mechanically answerable questions when the model cannot satisfy the grounding contract. */
 function deterministicQuestion(item: DistItem, source: GroundingSource, ordinal: number, topic: string): any | null {
   const phrases = documentPhrases(source.text);
-  const answerPhrase = phrases[ordinal % Math.max(phrases.length, 1)];
+  let answerPhrase = "";
+  let quote = "";
+  let cloze = "";
+  for (let offset = 0; offset < phrases.length; offset++) {
+    const candidate = phrases[(ordinal + offset) % phrases.length];
+    const evidence = conciseEvidence(source.text, candidate);
+    const candidateCloze = evidence.replace(new RegExp(candidate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"), "_____");
+    if (candidateCloze.includes("_____") && candidateCloze.replace("_____", "").split(/\s+/).filter(Boolean).length >= 4) {
+      answerPhrase = candidate; quote = evidence; cloze = candidateCloze; break;
+    }
+  }
+  if (!quote) {
+    const words = source.text.trim().split(/\s+/).slice(0, 24);
+    quote = words.join(" ");
+  }
   if ((item.type === "mcq" || item.type === "fill_blank") && (!answerPhrase || phrases.length < 2)) return null;
-  const quote = answerPhrase ? evidenceWindow(source.text, answerPhrase) : source.text.slice(0, 360).trim();
-  const cloze = answerPhrase ? quote.replace(new RegExp(answerPhrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"), "_____") : "";
 
   if (item.type === "mcq") {
-    const distractors = phrases.filter((value) => value.toLowerCase() !== answerPhrase.toLowerCase()).slice(0, 3);
+    const complexityAnswer = /^O\(/i.test(answerPhrase);
+    const preferred = phrases.filter((value) => /^O\(/i.test(value) === complexityAnswer);
+    const parallelDistractors = preferred.filter((value) => value.toLowerCase() !== answerPhrase.toLowerCase());
+    const distractors = (parallelDistractors.length > 0 ? parallelDistractors : phrases)
+      .filter((value) => value.toLowerCase() !== answerPhrase.toLowerCase()).slice(0, 3);
     const options = unique([answerPhrase, ...distractors]);
     if (options.length < 2) return null;
     const shift = ordinal % options.length;
     const rotated = [...options.slice(shift), ...options.slice(0, shift)];
     return {
       type: item.type, difficulty: item.difficulty, topic: topic || "Uploaded material",
-      prompt: `Which option correctly completes this statement? "${cloze}"`,
+      prompt: `Which of the following correctly completes the statement below?\n${cloze}`,
       options: rotated, answer: { correct_index: rotated.indexOf(answerPhrase) }, source_index: 1, source_quote: quote,
     };
   }
   if (item.type === "fill_blank") {
     return {
       type: item.type, difficulty: item.difficulty, topic: topic || "Uploaded material",
-      prompt: `Complete the statement: "${cloze}"`,
+      prompt: `Complete the following statement:\n${cloze}`,
       options: null, answer: { accepted: [answerPhrase] }, source_index: 1, source_quote: quote,
     };
   }
   if (item.type === "true_false") {
     return {
       type: item.type, difficulty: item.difficulty, topic: topic || "Uploaded material",
-      prompt: `True or False: "${quote}"`,
+      prompt: `True or False: ${quote}`,
       options: ["True", "False"], answer: { correct: true }, source_index: 1, source_quote: quote,
+    };
+  }
+  if (item.type === "matching") {
+    let pairs = documentPairs(source.text).slice(ordinal, ordinal + 3);
+    if (pairs.length < 2) {
+      pairs = phrases.map((phrase) => ({
+        left: phrase,
+        right: conciseEvidence(source.text, phrase),
+        evidence: conciseEvidence(source.text, phrase),
+      })).filter((pair) => pair.right.split(/\s+/).length >= 4)
+        .filter((pair, index, all) => all.findIndex((item) => item.right.toLowerCase() === pair.right.toLowerCase()) === index)
+        .slice(ordinal, ordinal + 3);
+    }
+    if (pairs.length < 2) return null;
+    const left = pairs.map((pair) => pair.left);
+    const right = pairs.map((pair) => pair.right).reverse();
+    return {
+      type: item.type, difficulty: item.difficulty, topic: topic || "Selected topic",
+      prompt: "Match each term with its corresponding statement.",
+      options: { left, right },
+      answer: { pairs: pairs.map((_, index) => [index, pairs.length - 1 - index]) },
+      source_index: 1, source_quote: pairs[0].evidence,
     };
   }
   if (item.type === "essay") {
     return {
       type: item.type, difficulty: item.difficulty, topic: topic || "Uploaded material",
-      prompt: `Explain the following concept: "${quote}"`,
+      prompt: `Explain the concept presented in the following statement:\n${quote}`,
       options: null,
       answer: { rubric: "Accurately explains the concept without introducing unsupported claims." },
       source_index: 1, source_quote: quote,
@@ -214,13 +281,13 @@ function deterministicQuestion(item: DistItem, source: GroundingSource, ordinal:
 }
 
 async function runGeneration(
-  jobId: string, subjectId: string, documentId: string, topic: string, dist: DistItem[]
+  jobId: string, subjectId: string, documentIds: string[], topic: string, dist: DistItem[]
 ): Promise<void> {
   const startedAt = Date.now();
   const seen = new Set<string>();
   const retrievalQuery = [topic, ...dist.map((item) => `${item.difficulty} ${item.type} questions`)]
     .filter(Boolean).join("; ");
-  const pool = await retrieveSources(subjectId, documentId, retrievalQuery);
+  const pool = await retrieveSources(subjectId, documentIds, retrievalQuery);
 
   const genBatch = async (item: DistItem, want: number, callNumber: number) => {
     const sources = contextFor(pool, callNumber);
@@ -232,6 +299,14 @@ ${schemaFor(item.type, item.difficulty)}
 Rules:
 - Every claim in the question, choices, correct answer, and rubric/pairs must be derived from the excerpts. Never use outside knowledge.
 - Question wording must stand alone. Never mention a document, source, material, passage, or excerpt, and never say "according to".
+- Use formal academic quiz language with a concise, direct question stem.
+- Write for students: use one clear idea per question and simple, easily understood wording.
+- Keep the question stem below 45 words whenever possible.
+- Keep answer choices brief, parallel in style, and clearly distinguishable.
+- Always provide the complete answer object required by the question type; never omit the correct answer, accepted answers, pairs, or essay rubric.
+- Do not use conversational wording, instructions to the teacher, or meta-commentary.
+- Do not include page numbers, raw code dumps, broken extraction fragments, or unnecessary symbols.
+- Do not copy a long source passage into the question; include only the information necessary to answer it.
 - The service will attach an exact evidence sentence from the most relevant retrieved SOURCE after generation.
 - For MCQ, every choice must be a verbatim phrase appearing in an excerpt. Only one may correctly answer the prompt.
 - For matching, every left and right item must be a verbatim phrase appearing in the cited SOURCE.
@@ -356,8 +431,16 @@ app.delete("/subject/:id", async (req, res) => {
 });
 
 app.post("/generate", async (req, res) => {
-  const { subject_id, document_id, topic, distribution } = req.body || {};
+  const { subject_id, document_id, document_ids, topic, distribution } = req.body || {};
   if (!subject_id) return res.status(400).json({ error: "subject_id is required" });
+  const selectedDocumentIds = Array.from(new Set(
+    (Array.isArray(document_ids) ? document_ids : document_id ? [document_id] : [])
+      .filter((id): id is string => typeof id === "string" && id.trim().length > 0)
+      .map((id) => id.trim())
+  ));
+  if (!selectedDocumentIds.length) {
+    return res.status(400).json({ error: "select at least one uploaded document" });
+  }
   const dist: DistItem[] = Array.isArray(distribution) && distribution.length
     ? distribution : [{ type: "mcq", difficulty: "medium", count: 3, points: 5 }];
   if (dist.some((item) => !QUESTION_TYPES.has(item.type) || !DIFFICULTIES.has(item.difficulty) ||
@@ -368,8 +451,8 @@ app.post("/generate", async (req, res) => {
 
   try {
     const args: unknown[] = [subject_id];
-    const documentFilter = document_id ? " AND dc.document_id=$2" : "";
-    if (document_id) args.push(document_id);
+    const documentFilter = " AND dc.document_id = ANY($2::uuid[])";
+    args.push(selectedDocumentIds);
     const chunks = await query<{ count: string }>(
       `SELECT count(*)::text AS count FROM document_chunks dc
        JOIN uploaded_documents ud ON ud.id=dc.document_id
@@ -385,7 +468,7 @@ app.post("/generate", async (req, res) => {
     );
     const jobId = rows[0].id;
     res.status(202).json({ job_id: jobId, requested });
-    runGeneration(jobId, subject_id, document_id || "", topic || "", dist).catch(async (e) => {
+    runGeneration(jobId, subject_id, selectedDocumentIds, topic || "", dist).catch(async (e) => {
       console.error("generation job failed", e);
       await query(
         `UPDATE generation_jobs SET status='error', error=$2, finished_at=now() WHERE id=$1`,

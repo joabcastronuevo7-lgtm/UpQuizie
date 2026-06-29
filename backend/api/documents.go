@@ -103,7 +103,19 @@ func listDocuments(c *gin.Context) {
 // questions, while documents are limited to materials that finished indexing.
 func generationOptions(c *gin.Context) {
 	subjectID := c.Param("id")
-	documentID := c.Query("document_id")
+	documentIDs := []string{}
+	requestedDocuments := c.Query("document_ids")
+	if requestedDocuments == "" {
+		requestedDocuments = c.Query("document_id") // backward compatibility
+	}
+	seenDocuments := map[string]bool{}
+	for _, id := range strings.Split(requestedDocuments, ",") {
+		id = strings.TrimSpace(id)
+		if id != "" && !seenDocuments[id] {
+			documentIDs = append(documentIDs, id)
+			seenDocuments[id] = true
+		}
+	}
 
 	rows, err := db.Query(context.Background(),
 		`SELECT id, filename FROM uploaded_documents
@@ -122,7 +134,7 @@ func generationOptions(c *gin.Context) {
 		}
 	}
 	rows.Close()
-	if documentID != "" {
+	for _, documentID := range documentIDs {
 		if _, ok := documentNames[documentID]; !ok {
 			c.JSON(400, gin.H{"error": "selected document is not ready or does not belong to this subject"})
 			return
@@ -166,7 +178,7 @@ func generationOptions(c *gin.Context) {
 		}
 	}
 
-	if documentID != "" {
+	for _, documentID := range documentIDs {
 		name := documentNames[documentID]
 		base := strings.TrimSuffix(name, filepath.Ext(name))
 		base = strings.NewReplacer("_", " ", "-", " ").Replace(base)
@@ -175,9 +187,13 @@ func generationOptions(c *gin.Context) {
 
 	args := []interface{}{subjectID}
 	docFilter := ""
-	if documentID != "" {
-		docFilter = " AND document_id=$2"
-		args = append(args, documentID)
+	if len(documentIDs) > 0 {
+		placeholders := make([]string, 0, len(documentIDs))
+		for _, documentID := range documentIDs {
+			args = append(args, documentID)
+			placeholders = append(placeholders, fmt.Sprintf("$%d", len(args)))
+		}
+		docFilter = " AND document_id IN (" + strings.Join(placeholders, ",") + ")"
 	}
 	generatedRows, err := db.Query(context.Background(),
 		`SELECT topic, count(*) FROM generated_questions
@@ -195,9 +211,7 @@ func generationOptions(c *gin.Context) {
 	}
 
 	chunkQuery := `SELECT content FROM document_chunks WHERE subject_id=$1`
-	if documentID != "" {
-		chunkQuery += ` AND document_id=$2`
-	}
+	chunkQuery += docFilter
 	chunkQuery += ` ORDER BY chunk_index LIMIT 30`
 	chunkRows, err := db.Query(context.Background(), chunkQuery, args...)
 	labelPattern := regexp.MustCompile(`([A-Z][A-Za-z0-9() /&+_-]{2,40}?):`)
@@ -316,8 +330,9 @@ func ragDelete(path string) {
 func generateQuestions(c *gin.Context) {
 	subjectID := c.Param("id")
 	var req struct {
-		Topic        string `json:"topic"`
-		DocumentID   string `json:"document_id"`
+		Topic        string   `json:"topic"`
+		DocumentID   string   `json:"document_id"`
+		DocumentIDs  []string `json:"document_ids"`
 		Distribution []struct {
 			Type       string `json:"type"`
 			Difficulty string `json:"difficulty"`
@@ -334,6 +349,7 @@ func generateQuestions(c *gin.Context) {
 		"subject_id":   subjectID,
 		"topic":        req.Topic,
 		"document_id":  req.DocumentID,
+		"document_ids": req.DocumentIDs,
 		"distribution": req.Distribution,
 	})
 	client := http.Client{Timeout: 10 * time.Minute}
