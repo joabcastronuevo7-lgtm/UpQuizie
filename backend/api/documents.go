@@ -47,7 +47,6 @@ func uploadDocument(c *gin.Context) {
 		return
 	}
 
-	// Ask the RAG service to process (extract -> chunk -> embed -> store).
 	go func() {
 		body, _ := json.Marshal(gin.H{
 			"document_id": docID,
@@ -116,16 +115,60 @@ func deleteDocument(c *gin.Context) {
 		_ = os.Remove(filePath)
 	}
 
-	// Best-effort: drop this document's vectors from Milvus.
-	go func() {
-		req, _ := http.NewRequest(http.MethodDelete, ragURL+"/document/"+docID, nil)
-		client := http.Client{Timeout: 30 * time.Second}
-		if resp, err := client.Do(req); err == nil {
-			resp.Body.Close()
-		}
-	}()
-
+	go ragDelete("/document/" + docID)
 	c.JSON(200, gin.H{"ok": true})
+}
+
+// updateSubject toggles a subject's status (active/archived) or edits fields.
+func updateSubject(c *gin.Context) {
+	var req struct {
+		Status      *string `json:"status"`
+		Name        *string `json:"name"`
+		Department  *string `json:"department"`
+		Description *string `json:"description"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Status != nil && *req.Status != "active" && *req.Status != "archived" {
+		c.JSON(400, gin.H{"error": "status must be 'active' or 'archived'"})
+		return
+	}
+	_, err := db.Exec(context.Background(),
+		`UPDATE subjects SET
+		   status      = COALESCE($2, status),
+		   name        = COALESCE($3, name),
+		   department  = COALESCE($4, department),
+		   description = COALESCE($5, description)
+		 WHERE id=$1`,
+		c.Param("id"), req.Status, req.Name, req.Department, req.Description)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true})
+}
+
+// deleteSubject removes a subject and everything under it (enrollments,
+// documents, chunks, generated questions, exams) plus its Milvus vectors.
+func deleteSubject(c *gin.Context) {
+	subjectID := c.Param("id")
+	if _, err := db.Exec(context.Background(), `DELETE FROM subjects WHERE id=$1`, subjectID); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	go ragDelete("/subject/" + subjectID)
+	c.JSON(200, gin.H{"ok": true})
+}
+
+// ragDelete issues a best-effort DELETE to the RAG service.
+func ragDelete(path string) {
+	req, _ := http.NewRequest(http.MethodDelete, ragURL+path, nil)
+	client := http.Client{Timeout: 30 * time.Second}
+	if resp, err := client.Do(req); err == nil {
+		resp.Body.Close()
+	}
 }
 
 // generateQuestions forwards the request to the RAG service, which retrieves
@@ -165,4 +208,19 @@ func generateQuestions(c *gin.Context) {
 	var ragOut map[string]interface{}
 	json.NewDecoder(resp.Body).Decode(&ragOut)
 	c.JSON(200, ragOut)
+}
+
+// getGenerationStatus reports progress of an async generation job.
+func getGenerationStatus(c *gin.Context) {
+	var status string
+	var requested, generated int
+	var errMsg *string
+	err := db.QueryRow(context.Background(),
+		`SELECT status, requested, generated, error FROM generation_jobs WHERE id=$1`,
+		c.Param("jobId")).Scan(&status, &requested, &generated, &errMsg)
+	if err != nil {
+		c.JSON(404, gin.H{"error": "job not found"})
+		return
+	}
+	c.JSON(200, gin.H{"status": status, "requested": requested, "generated": generated, "error": errMsg})
 }

@@ -92,10 +92,26 @@ services:
   ollama:
     image: ollama/ollama:latest
     container_name: upquizie-ollama
+    environment:
+      # Keep the model resident in GPU memory so there's no reload per request.
+      OLLAMA_KEEP_ALIVE: "-1"
+      OLLAMA_NUM_PARALLEL: "4"
     volumes:
       - ollama:/root/.ollama
     ports:
       - "11434:11434"
+    # ---- NVIDIA GPU acceleration ----
+    # Requires an NVIDIA GPU + driver and Docker GPU support (NVIDIA Container
+    # Toolkit; on Windows this comes with Docker Desktop's WSL2 backend).
+    # If you do NOT have an NVIDIA GPU, delete this whole `deploy:` block or
+    # the stack will fail to start.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: ["gpu"]
     restart: unless-stopped
 
   etcd:

@@ -1,11 +1,40 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import Layout, { Icon } from "../components/Layout";
 import { api, Subject, Question } from "../api";
 
+function asText(v: unknown): string {
+  if (v == null) return "";
+  if (typeof v === "string") return v;
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  try { return JSON.stringify(v); } catch { return String(v); }
+}
+
+const diffStyle: Record<string, string> = {
+  easy: "bg-green-100 text-green-800 border border-green-200",
+  medium: "bg-orange-100 text-orange-800 border border-orange-200",
+  hard: "bg-error-container text-on-error-container",
+};
+
+const typeLabel: Record<string, string> = {
+  mcq: "Multiple Choice",
+  true_false: "True / False",
+  fill_blank: "Fill-in-the-blank",
+  matching: "Matching Type",
+  essay: "Essay",
+};
+
+interface Draft {
+  prompt: string;
+  points: number;
+  options: any;
+  answer: any;
+}
+
 export default function ReviewQuestions() {
   const qc = useQueryClient();
   const [subjectId, setSubjectId] = useState("");
+  const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [examTitle, setExamTitle] = useState("AI-Generated Exam");
   const [msg, setMsg] = useState("");
@@ -22,9 +51,40 @@ export default function ReviewQuestions() {
     enabled: !!sid,
   });
 
-  const decide = useMutation({
-    mutationFn: ({ id, status }: { id: string; status: string }) =>
-      api.patch(`/generated/${id}`, { status }),
+  // Seed editable drafts from loaded questions.
+  useEffect(() => {
+    setDrafts((prev) => {
+      const next = { ...prev };
+      for (const q of pending) {
+        if (!next[q.id]) {
+          next[q.id] = {
+            prompt: asText(q.prompt),
+            points: q.points ?? 1,
+            options: q.options ?? null,
+            answer: q.answer ?? {},
+          };
+        }
+      }
+      return next;
+    });
+  }, [pending]);
+
+  const setDraft = (id: string, patch: Partial<Draft>) =>
+    setDrafts((d) => ({ ...d, [id]: { ...d[id], ...patch } }));
+
+  const save = useMutation({
+    mutationFn: ({ id, d }: { id: string; d: Draft }) =>
+      api.patch(`/generated/${id}`, {
+        prompt: d.prompt,
+        points: Number(d.points) || 1,
+        options: d.options,
+        answer: d.answer,
+      }),
+    onSuccess: () => setMsg("Saved."),
+  });
+
+  const reject = useMutation({
+    mutationFn: (id: string) => api.patch(`/generated/${id}`, { status: "rejected" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["generated", sid] }),
   });
 
@@ -36,7 +96,7 @@ export default function ReviewQuestions() {
         question_ids: ids,
       }),
     onSuccess: (r) => {
-      setMsg(`Created exam with ${r.questions_added} question(s). Publish it from the Exams page.`);
+      setMsg(`Created exam with ${r.questions_added} question(s). Publish it on the Exams page.`);
       setSelected({});
       qc.invalidateQueries({ queryKey: ["generated", sid] });
       qc.invalidateQueries({ queryKey: ["exams"] });
@@ -47,71 +107,208 @@ export default function ReviewQuestions() {
 
   return (
     <Layout title="Review Questions">
-      <div className="flex items-center justify-between mb-6">
-        <p className="text-on-surface-variant">Approve AI-generated questions, then build an exam from them.</p>
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+        <div>
+          <h3 className="font-headline text-xl text-primary">Review Generated Questions</h3>
+          <p className="text-on-surface-variant text-sm">
+            Edit, save, and select questions to build an exam.
+          </p>
+        </div>
         <select value={sid} onChange={(e) => setSubjectId(e.target.value)}
           className="border border-outline-variant rounded-lg px-3 py-2 bg-white">
           {subjects.map((s) => <option key={s.id} value={s.id}>{s.code} — {s.name}</option>)}
         </select>
       </div>
 
-      {chosen.length > 0 && (
-        <div className="bg-secondary-container/40 border border-secondary rounded-xl p-4 mb-6 flex items-center gap-4">
-          <input value={examTitle} onChange={(e) => setExamTitle(e.target.value)}
-            className="flex-1 border border-outline-variant rounded-lg px-3 py-2 bg-white" />
-          <button onClick={() => createExam.mutate(chosen)} disabled={createExam.isPending}
-            className="px-6 py-2 bg-primary text-on-primary rounded-lg font-semibold whitespace-nowrap disabled:opacity-60">
-            Create exam from {chosen.length} selected
-          </button>
-        </div>
-      )}
+      {/* Sticky build bar */}
+      <div className="flex items-center gap-3 bg-surface-container-lowest border border-outline-variant rounded-xl p-4 mb-6">
+        <input value={examTitle} onChange={(e) => setExamTitle(e.target.value)}
+          placeholder="Exam title"
+          className="flex-1 border border-outline-variant rounded-lg px-3 py-2 bg-white outline-none focus:border-secondary" />
+        <button onClick={() => createExam.mutate(chosen)} disabled={createExam.isPending || chosen.length === 0}
+          className="px-6 py-2 bg-primary text-on-primary rounded-lg font-semibold whitespace-nowrap disabled:opacity-50">
+          Create exam ({chosen.length})
+        </button>
+      </div>
       {msg && <p className="text-sm text-secondary mb-4">{msg}</p>}
 
-      <div className="space-y-4">
-        {pending.map((q) => (
-          <div key={q.id} className="bg-surface-container-lowest border border-outline-variant rounded-xl p-5">
-            <div className="flex items-start justify-between gap-4">
-              <label className="flex items-start gap-3 flex-1 cursor-pointer">
-                <input type="checkbox" className="mt-1" checked={!!selected[q.id]}
-                  onChange={(e) => setSelected((s) => ({ ...s, [q.id]: e.target.checked }))} />
-                <div>
-                  <div className="flex gap-2 mb-2">
-                    <span className="px-2 py-0.5 rounded-full bg-surface-container-high text-xs">{q.type}</span>
-                    <span className="px-2 py-0.5 rounded-full bg-secondary-container text-on-secondary-container text-xs">
-                      {q.difficulty} • {q.points} pts
+      <div className="space-y-6">
+        {pending.map((q, idx) => {
+          const d = drafts[q.id] || { prompt: asText(q.prompt), points: q.points, options: q.options, answer: q.answer };
+          const isSel = !!selected[q.id];
+          return (
+            <section key={q.id}
+              className={`bg-surface-container-lowest border rounded-xl shadow-sm overflow-hidden transition-all ${isSel ? "border-secondary ring-1 ring-secondary" : "border-outline-variant"}`}>
+              <div className="p-6 space-y-4">
+                {/* Header row */}
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <span className="w-8 h-8 rounded bg-primary text-on-primary flex items-center justify-center font-bold text-sm">
+                      {String(idx + 1).padStart(2, "0")}
                     </span>
-                    {q.topic && <span className="px-2 py-0.5 rounded-full bg-tertiary-fixed text-on-tertiary-container text-xs">{q.topic}</span>}
+                    <div className="flex gap-2 flex-wrap items-center">
+                      <span className="px-3 py-1 rounded-full bg-surface-container-high text-on-surface-variant text-xs font-semibold">
+                        {typeLabel[q.type] || asText(q.type)}
+                      </span>
+                      <span className={`px-3 py-1 rounded-full text-xs font-semibold capitalize ${diffStyle[q.difficulty] || "bg-surface-container-high"}`}>
+                        {asText(q.difficulty)}
+                      </span>
+                      <span className="flex items-center gap-1 px-3 py-1 rounded-full bg-surface-container-high text-on-surface-variant text-xs border border-outline-variant">
+                        <Icon name="grade" className="text-[14px]" />
+                        <input type="number" min={1} value={d.points}
+                          onChange={(e) => setDraft(q.id, { points: Number(e.target.value) })}
+                          className="w-8 bg-transparent border-none p-0 focus:ring-0 text-xs" /> pts
+                      </span>
+                      {q.topic && (
+                        <span className="px-3 py-1 rounded-full bg-secondary-container text-on-secondary-container text-xs">
+                          {asText(q.topic)}
+                        </span>
+                      )}
+                    </div>
                   </div>
-                  <p className="font-medium text-on-surface">{q.prompt}</p>
-                  {Array.isArray(q.options) && (
-                    <ul className="mt-2 text-sm text-on-surface-variant list-disc pl-5">
-                      {q.options.map((o: string, k: number) => <li key={k}>{o}</li>)}
-                    </ul>
-                  )}
-                  {q.source_ref && (
-                    <p className="mt-2 text-xs italic text-on-surface-variant border-l-2 border-secondary pl-2">
-                      Source: {q.source_ref}
-                    </p>
-                  )}
+                  <div className="flex items-center gap-2">
+                    <label className="flex items-center gap-1 text-xs text-on-surface-variant cursor-pointer mr-1">
+                      <input type="checkbox" checked={isSel}
+                        onChange={(e) => setSelected((s) => ({ ...s, [q.id]: e.target.checked }))} />
+                      Include
+                    </label>
+                    <button onClick={() => reject.mutate(q.id)}
+                      className="p-2 text-on-surface-variant hover:bg-error-container hover:text-error rounded transition-colors" title="Reject">
+                      <Icon name="delete" />
+                    </button>
+                  </div>
                 </div>
-              </label>
-              <div className="flex gap-2 shrink-0">
-                <button onClick={() => decide.mutate({ id: q.id, status: "approved" })}
-                  className="p-2 text-secondary hover:bg-secondary-container rounded" title="Approve">
-                  <Icon name="check_circle" />
-                </button>
-                <button onClick={() => decide.mutate({ id: q.id, status: "rejected" })}
-                  className="p-2 text-error hover:bg-error-container rounded" title="Reject">
-                  <Icon name="cancel" />
+
+                {/* Question text */}
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-bold uppercase tracking-wider text-outline">Question Text</label>
+                  <textarea rows={2} value={d.prompt}
+                    onChange={(e) => setDraft(q.id, { prompt: e.target.value })}
+                    className="w-full bg-surface border border-outline-variant rounded-lg p-3 text-body-md focus:ring-2 focus:ring-secondary/20 focus:border-secondary outline-none" />
+                </div>
+
+                {/* Answer editor by type */}
+                <AnswerEditor q={q} draft={d} setDraft={(p) => setDraft(q.id, p)} />
+
+                {/* Source reference */}
+                {q.source_ref && (
+                  <details className="group border-t border-outline-variant pt-3">
+                    <summary className="flex items-center gap-2 cursor-pointer text-secondary text-sm font-semibold list-none">
+                      <Icon name="expand_more" className="transition-transform group-open:rotate-180" />
+                      View Source Reference
+                    </summary>
+                    <div className="mt-3 p-3 bg-surface rounded-lg border-l-4 border-secondary text-on-surface-variant italic text-sm">
+                      {asText(q.source_ref)}
+                    </div>
+                  </details>
+                )}
+              </div>
+
+              {/* Footer */}
+              <div className="bg-surface-container-low px-6 py-3 flex justify-end gap-3">
+                <button onClick={() => reject.mutate(q.id)}
+                  className="text-on-surface-variant text-sm font-semibold hover:text-error">Discard</button>
+                <button onClick={() => save.mutate({ id: q.id, d })}
+                  disabled={save.isPending}
+                  className="bg-secondary text-on-secondary px-4 py-1.5 rounded-lg text-sm font-semibold hover:opacity-90 disabled:opacity-60">
+                  Save Changes
                 </button>
               </div>
-            </div>
-          </div>
-        ))}
+            </section>
+          );
+        })}
+
         {pending.length === 0 && (
           <p className="text-on-surface-variant">No pending questions. Generate some on the Generate page.</p>
         )}
       </div>
     </Layout>
   );
+}
+
+// ---- per-type answer editor ----
+function AnswerEditor({ q, draft, setDraft }: { q: Question; draft: Draft; setDraft: (p: Partial<Draft>) => void }) {
+  if (q.type === "mcq") {
+    const opts: string[] = Array.isArray(draft.options) ? draft.options.map(asText) : [];
+    const correct = draft.answer?.correct_index ?? 0;
+    return (
+      <div className="space-y-1.5">
+        <label className="text-[11px] font-bold uppercase tracking-wider text-outline">Options</label>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {opts.map((o, i) => (
+            <label key={i}
+              className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer ${i === correct ? "border-secondary bg-secondary-container/30" : "border-outline-variant bg-surface"}`}>
+              <input type="radio" name={`ans-${q.id}`} checked={i === correct}
+                onChange={() => setDraft({ answer: { correct_index: i } })} className="text-secondary" />
+              <input value={o}
+                onChange={(e) => {
+                  const copy = [...opts]; copy[i] = e.target.value;
+                  setDraft({ options: copy });
+                }}
+                className="flex-1 bg-transparent border-none p-0 text-sm focus:ring-0" />
+            </label>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (q.type === "true_false") {
+    const correct = draft.answer?.correct === true;
+    return (
+      <div className="space-y-1.5">
+        <label className="text-[11px] font-bold uppercase tracking-wider text-outline">Correct Answer</label>
+        <div className="flex gap-3">
+          {[true, false].map((v) => (
+            <label key={String(v)}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg border cursor-pointer ${correct === v ? "border-secondary bg-secondary-container/30 text-secondary" : "border-outline-variant"}`}>
+              <input type="radio" name={`ans-${q.id}`} checked={correct === v}
+                onChange={() => setDraft({ answer: { correct: v } })} className="text-secondary" />
+              <span className="font-semibold">{v ? "True" : "False"}</span>
+            </label>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (q.type === "fill_blank") {
+    const accepted: string[] = Array.isArray(draft.answer?.accepted) ? draft.answer.accepted.map(asText) : [];
+    return (
+      <div className="space-y-1.5">
+        <label className="text-[11px] font-bold uppercase tracking-wider text-outline">Accepted Answer(s) — comma separated</label>
+        <input value={accepted.join(", ")}
+          onChange={(e) => setDraft({ answer: { accepted: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) } })}
+          className="w-full bg-surface border border-outline-variant rounded-lg p-2.5 text-sm outline-none focus:border-secondary" />
+      </div>
+    );
+  }
+
+  if (q.type === "matching") {
+    const left: string[] = Array.isArray(draft.options?.left) ? draft.options.left.map(asText) : [];
+    const right: string[] = Array.isArray(draft.options?.right) ? draft.options.right.map(asText) : [];
+    return (
+      <div className="space-y-1.5">
+        <label className="text-[11px] font-bold uppercase tracking-wider text-outline">Pairs</label>
+        <div className="grid grid-cols-2 gap-3 text-sm">
+          <div className="space-y-2">{left.map((l, i) => <div key={i} className="p-2 bg-surface-container rounded">{l}</div>)}</div>
+          <div className="space-y-2">{right.map((r, i) => <div key={i} className="p-2 bg-secondary-container/40 rounded">{r}</div>)}</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (q.type === "essay") {
+    const rubric = asText(draft.answer?.rubric);
+    return (
+      <div className="space-y-1.5">
+        <label className="text-[11px] font-bold uppercase tracking-wider text-outline">Grading Rubric</label>
+        <textarea rows={2} value={rubric}
+          onChange={(e) => setDraft({ answer: { rubric: e.target.value } })}
+          className="w-full bg-surface border border-outline-variant rounded-lg p-3 text-sm outline-none focus:border-secondary" />
+      </div>
+    );
+  }
+
+  return null;
 }

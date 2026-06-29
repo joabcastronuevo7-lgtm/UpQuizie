@@ -6,11 +6,7 @@ export function Icon({ name, className = "" }: { name: string; className?: strin
   return <span className={`material-symbols-outlined ${className}`}>{name}</span>;
 }
 
-interface NavItem {
-  label: string;
-  icon: string;
-  to: string;
-}
+interface NavItem { label: string; icon: string; to: string }
 
 const navByRole: Record<string, NavItem[]> = {
   student: [
@@ -24,6 +20,7 @@ const navByRole: Record<string, NavItem[]> = {
     { label: "Generate", icon: "auto_awesome", to: "/educator" },
     { label: "Review Questions", icon: "fact_check", to: "/review" },
     { label: "Exams", icon: "quiz", to: "/exams" },
+    { label: "Exam Sessions", icon: "live_tv", to: "/sessions" },
     { label: "Analytics", icon: "analytics", to: "/analytics" },
   ],
   admin: [
@@ -48,11 +45,11 @@ export default function Layout({ children, title }: { children: ReactNode; title
           <div>
             <h1 className="font-headline text-xl font-bold text-primary leading-tight">UpQuiz</h1>
             <p className="text-[10px] uppercase tracking-widest text-on-surface-variant font-semibold">
-              Academic Intelligence
+              Academic Management
             </p>
           </div>
         </div>
-        <nav className="flex-1 px-4 space-y-1">
+        <nav className="flex-1 px-4 space-y-1 overflow-y-auto">
           {items.map((it) => {
             const active = loc.pathname === it.to;
             return (
@@ -73,10 +70,7 @@ export default function Layout({ children, title }: { children: ReactNode; title
         </nav>
         <div className="p-4 border-t border-outline-variant">
           <button
-            onClick={() => {
-              logout();
-              nav("/login");
-            }}
+            onClick={() => { logout(); nav("/login"); }}
             className="flex items-center gap-3 px-4 py-3 w-full rounded-lg text-on-surface-variant hover:bg-surface-container-high text-sm font-semibold"
           >
             <Icon name="logout" />

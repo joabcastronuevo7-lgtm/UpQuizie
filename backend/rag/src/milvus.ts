@@ -79,6 +79,16 @@ export async function deleteByDocument(documentId: string): Promise<void> {
   await c.flushSync({ collection_names: [COLLECTION] });
 }
 
+// Remove all vectors belonging to a subject.
+export async function deleteBySubject(subjectId: string): Promise<void> {
+  const c = await getClient();
+  await c.deleteEntities({
+    collection_name: COLLECTION,
+    filter: `subject_id == "${subjectId}"`,
+  });
+  await c.flushSync({ collection_names: [COLLECTION] });
+}
+
 export interface SearchHit {
   text: string;
   document_id: string;

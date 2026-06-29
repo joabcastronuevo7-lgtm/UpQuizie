@@ -8,6 +8,9 @@ import Materials from "./pages/Materials";
 import ReviewQuestions from "./pages/ReviewQuestions";
 import Subjects from "./pages/Subjects";
 import ExamsList from "./pages/ExamsList";
+import ExamSessions from "./pages/ExamSessions";
+import ScoreReview from "./pages/ScoreReview";
+import Enrollment from "./pages/Enrollment";
 import TakeExam from "./pages/TakeExam";
 import Results from "./pages/Results";
 import Analytics from "./pages/Analytics";
@@ -39,8 +42,11 @@ export default function App() {
       <Route path="/educator" element={<Protected><EducatorDashboard /></Protected>} />
       <Route path="/materials" element={<Protected><Materials /></Protected>} />
       <Route path="/subjects/:id/materials" element={<Protected><Materials /></Protected>} />
+      <Route path="/subjects/:id/enroll" element={<Protected><Enrollment /></Protected>} />
       <Route path="/review" element={<Protected><ReviewQuestions /></Protected>} />
       <Route path="/analytics" element={<Protected><Analytics /></Protected>} />
+      <Route path="/sessions" element={<Protected><ExamSessions /></Protected>} />
+      <Route path="/score-review" element={<Protected><ScoreReview /></Protected>} />
       <Route path="/subjects" element={<Protected><Subjects /></Protected>} />
       <Route path="/exams" element={<Protected><ExamsList /></Protected>} />
       <Route path="/exams/:id/take" element={<Protected><TakeExam /></Protected>} />

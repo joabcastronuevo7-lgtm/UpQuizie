@@ -163,3 +163,15 @@ CREATE INDEX idx_exams_subject       ON exams(subject_id);
 CREATE INDEX idx_examq_exam          ON exam_questions(exam_id);
 CREATE INDEX idx_attempts_student    ON student_exam_attempts(student_id);
 CREATE INDEX idx_topicperf_subject   ON topic_performance(subject_id);
+
+-- ---------- generation_jobs (async AI generation tracking) ----------
+CREATE TABLE generation_jobs (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    subject_id  UUID REFERENCES subjects(id) ON DELETE SET NULL,
+    status      TEXT NOT NULL DEFAULT 'running',  -- running | done | error
+    requested   INT  NOT NULL DEFAULT 0,
+    generated   INT  NOT NULL DEFAULT 0,
+    error       TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at TIMESTAMPTZ
+);

@@ -82,8 +82,9 @@ func main() {
 		auth.POST("/subjects/:id/documents", requireRole("educator", "admin"), uploadDocument)
 		auth.DELETE("/subjects/:id/documents/:docId", requireRole("educator", "admin"), deleteDocument)
 
-		// RAG question generation + review/approval
+		// RAG question generation (async) + review/approval
 		auth.POST("/subjects/:id/generate", requireRole("educator", "admin"), generateQuestions)
+		auth.GET("/generation/:jobId", requireRole("educator", "admin"), getGenerationStatus)
 		auth.GET("/subjects/:id/generated", requireRole("educator", "admin"), listGenerated)
 		auth.PATCH("/generated/:gid", requireRole("educator", "admin"), updateGenerated)
 
