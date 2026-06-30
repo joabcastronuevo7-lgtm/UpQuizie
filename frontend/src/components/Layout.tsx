@@ -13,6 +13,8 @@ const navByRole: Record<string, NavItem[]> = {
     { label: "Dashboard", icon: "dashboard", to: "/student" },
     { label: "Subjects", icon: "library_books", to: "/subjects" },
     { label: "Exams", icon: "assignment", to: "/exams" },
+    { label: "Performance", icon: "monitoring", to: "/performance" },
+    { label: "Settings", icon: "settings", to: "/settings" },
   ],
   educator: [
     { label: "Subjects", icon: "book", to: "/subjects" },

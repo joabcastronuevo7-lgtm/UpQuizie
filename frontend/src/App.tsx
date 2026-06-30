@@ -14,6 +14,8 @@ import Enrollment from "./pages/Enrollment";
 import TakeExam from "./pages/TakeExam";
 import Results from "./pages/Results";
 import Analytics from "./pages/Analytics";
+import StudentPerformance from "./pages/StudentPerformance";
+import Settings from "./pages/Settings";
 import AdminUsers from "./pages/AdminUsers";
 
 function Protected({ children }: { children: JSX.Element }) {
@@ -45,6 +47,8 @@ export default function App() {
       <Route path="/subjects/:id/enroll" element={<Protected><Enrollment /></Protected>} />
       <Route path="/review" element={<Protected><ReviewQuestions /></Protected>} />
       <Route path="/analytics" element={<Protected><Analytics /></Protected>} />
+      <Route path="/performance" element={<Protected><StudentPerformance /></Protected>} />
+      <Route path="/settings" element={<Protected><Settings /></Protected>} />
       <Route path="/sessions" element={<Protected><ExamSessions /></Protected>} />
       <Route path="/score-review" element={<Protected><ScoreReview /></Protected>} />
       <Route path="/subjects" element={<Protected><Subjects /></Protected>} />

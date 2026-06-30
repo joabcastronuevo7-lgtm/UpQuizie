@@ -1,56 +1,125 @@
-import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import Layout, { Icon } from "../components/Layout";
 import { api, Exam } from "../api";
 import { useAuth } from "../auth";
 
+interface Perf {
+  attempts: { id: string; title: string; subject: string; score: number | null; total_points: number | null; status: string }[];
+}
+
 export default function ExamsList() {
   const { user } = useAuth();
-  const [exams, setExams] = useState<Exam[]>([]);
+  const nav = useNavigate();
+  const isStudent = user?.role === "student";
+  const [tab, setTab] = useState<"active" | "completed">("active");
 
-  useEffect(() => {
-    api.get<Exam[]>("/exams").then(setExams).catch(() => {});
-  }, []);
+  const { data: exams = [] } = useQuery({ queryKey: ["exams"], queryFn: () => api.get<Exam[]>("/exams") });
+  const { data: perf } = useQuery({ queryKey: ["me-performance"], queryFn: () => api.get<Perf>("/me/performance"), enabled: isStudent });
+
+  const active = exams.filter((e) => e.status === "published");
+  const completed = perf?.attempts.filter((a) => a.status !== "in_progress") || [];
+
+  // Educator/admin: simple grid of all exams.
+  if (!isStudent) {
+    return (
+      <Layout title="Exams">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {exams.map((e) => <ExamCard key={e.id} e={e} />)}
+          {exams.length === 0 && <p className="text-on-surface-variant">No exams yet.</p>}
+        </div>
+      </Layout>
+    );
+  }
 
   return (
-    <Layout title="Exams">
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {exams.map((e) => (
-          <div key={e.id} className="bg-white rounded-xl border border-outline-variant p-6 flex flex-col">
-            <div className="flex justify-between items-start mb-4">
-              <span
-                className={`px-3 py-1 rounded-full text-xs uppercase tracking-wider ${
-                  e.status === "active"
-                    ? "bg-secondary-container text-on-secondary-container"
-                    : "bg-surface-container-high text-on-surface-variant"
-                }`}
-              >
-                {e.status}
-              </span>
-              <Icon name="timer" className="text-secondary" />
-            </div>
-            <h3 className="font-headline text-lg text-primary mb-1">{e.title}</h3>
-            <p className="text-sm text-on-surface-variant mb-4">{e.subject}</p>
-            <div className="space-y-2 mb-6 text-sm text-on-surface-variant">
-              <div className="flex items-center gap-2"><Icon name="schedule" className="text-[18px]" /> {e.duration_min} minutes</div>
-              <div className="flex items-center gap-2"><Icon name="grade" className="text-[18px]" /> {e.total_points} points</div>
-            </div>
-            {user?.role === "student" && e.status === "active" ? (
-              <Link
-                to={`/exams/${e.id}/take`}
-                className="mt-auto w-full bg-secondary text-on-secondary py-3 rounded-lg font-semibold text-center flex items-center justify-center gap-2"
-              >
-                Take Exam <Icon name="arrow_forward" className="text-[20px]" />
-              </Link>
-            ) : (
-              <div className="mt-auto text-sm text-on-surface-variant flex items-center gap-1">
-                <Icon name="info" className="text-[18px]" /> {e.status === "active" ? "Available" : "Not available"}
-              </div>
-            )}
-          </div>
-        ))}
-        {exams.length === 0 && <p className="text-on-surface-variant">No exams found.</p>}
+    <Layout title="My Exams">
+      <div className="mb-6">
+        <h2 className="font-headline text-2xl text-primary">My Exams</h2>
+        <p className="text-on-surface-variant text-sm">Manage and track your examination schedule and performance.</p>
       </div>
+
+      <div className="flex border-b border-outline-variant mb-6">
+        {(["active", "completed"] as const).map((t) => (
+          <button key={t} onClick={() => setTab(t)}
+            className={`px-8 py-3 font-semibold capitalize transition-all border-b-2 ${tab === t ? "text-secondary border-secondary" : "text-on-surface-variant border-transparent hover:text-secondary"}`}>
+            {t}
+          </button>
+        ))}
+      </div>
+
+      {tab === "active" && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {active.map((e) => (
+            <div key={e.id} className="bg-surface-container-lowest rounded-xl border border-outline-variant p-6 flex flex-col">
+              <div className="flex justify-between items-start mb-4">
+                <span className="bg-secondary-container text-on-secondary-container px-3 py-1 rounded-full text-xs uppercase tracking-wider">Live Now</span>
+                <Icon name="timer" className="text-secondary" />
+              </div>
+              <h3 className="font-headline text-lg text-primary mb-1">{e.title}</h3>
+              <p className="text-on-surface-variant text-sm mb-4">{e.subject}</p>
+              <div className="space-y-2 mb-6 text-sm text-on-surface-variant">
+                <div className="flex items-center gap-2"><Icon name="schedule" className="text-[18px]" /> {e.duration_min} minutes</div>
+                <div className="flex items-center gap-2"><Icon name="grade" className="text-[18px]" /> {e.total_points} points</div>
+              </div>
+              <button onClick={() => nav(`/exams/${e.id}/take`)}
+                className="mt-auto w-full bg-secondary text-on-secondary py-3 rounded-lg font-semibold flex items-center justify-center gap-2">
+                Take Exam <Icon name="arrow_forward" className="text-[20px]" />
+              </button>
+            </div>
+          ))}
+          {active.length === 0 && <p className="text-on-surface-variant">No active exams.</p>}
+        </div>
+      )}
+
+      {tab === "completed" && (
+        <div className="space-y-4">
+          {completed.map((a) => (
+            <div key={a.id} className="bg-surface-container-lowest rounded-xl border border-outline-variant p-6 flex flex-col md:flex-row md:items-center justify-between gap-6">
+              <div className="flex items-center gap-6">
+                <div className="w-14 h-14 rounded-full bg-secondary-container flex items-center justify-center text-secondary">
+                  <Icon name="check_circle" className="text-3xl" />
+                </div>
+                <div>
+                  <h3 className="font-headline text-lg text-primary">{a.title}</h3>
+                  <p className="text-on-surface-variant text-sm">{a.subject} • {a.status.replace("_", " ")}</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-8">
+                <div className="text-center">
+                  <p className="text-xs text-on-surface-variant uppercase">Score</p>
+                  <p className="font-headline text-xl font-bold text-secondary">
+                    {a.score != null && a.total_points ? `${Math.round((a.score / a.total_points) * 100)}%` : "—"}
+                  </p>
+                </div>
+                <button onClick={() => nav(`/attempts/${a.id}/results`)}
+                  className="bg-surface-container-high text-primary px-6 py-3 rounded-lg font-semibold hover:bg-surface-variant">
+                  View Results
+                </button>
+              </div>
+            </div>
+          ))}
+          {completed.length === 0 && <p className="text-on-surface-variant">No completed exams yet.</p>}
+        </div>
+      )}
     </Layout>
+  );
+}
+
+function ExamCard({ e }: { e: Exam }) {
+  return (
+    <div className="bg-surface-container-lowest rounded-xl border border-outline-variant p-6 flex flex-col">
+      <div className="flex justify-between items-start mb-4">
+        <span className={`px-3 py-1 rounded-full text-xs uppercase tracking-wider ${e.status === "published" ? "bg-secondary-container text-on-secondary-container" : "bg-surface-container-high text-on-surface-variant"}`}>{e.status}</span>
+        <Icon name="quiz" className="text-secondary" />
+      </div>
+      <h3 className="font-headline text-lg text-primary mb-1">{e.title}</h3>
+      <p className="text-on-surface-variant text-sm mb-4">{e.subject}</p>
+      <div className="space-y-2 text-sm text-on-surface-variant">
+        <div className="flex items-center gap-2"><Icon name="schedule" className="text-[18px]" /> {e.duration_min} min</div>
+        <div className="flex items-center gap-2"><Icon name="grade" className="text-[18px]" /> {e.total_points} points</div>
+      </div>
+    </div>
   );
 }

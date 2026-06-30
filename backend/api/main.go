@@ -100,6 +100,11 @@ func main() {
 		auth.POST("/attempts/:aid/submit", submitAttempt)
 		auth.GET("/attempts/:aid", getAttempt)
 
+		// Student self-service
+		auth.GET("/me/performance", studentPerformance)
+		auth.GET("/exams/:id/access", examAccessInfo)
+		auth.POST("/exams/:id/verify", verifyExamAccess)
+
 		// Analytics
 		auth.GET("/subjects/:id/analytics", requireRole("educator", "admin"), subjectAnalytics)
 
