@@ -45,7 +45,7 @@ export default function Subjects() {
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-8">
         <div>
           <h2 className="font-headline text-2xl text-primary mb-1">Subjects</h2>
-          <p className="text-on-surface-variant max-w-xl text-sm">Manage and organize your courses and departments. Click a subject to manage its materials.</p>
+          <p className="text-on-surface-variant max-w-xl text-sm">Open a subject to view its published quizzes and learning materials.</p>
         </div>
         {canManage && (
           <button onClick={() => setShowForm((s) => !s)}
@@ -87,7 +87,7 @@ export default function Subjects() {
           return (
             <div key={s.id}
               className={`bg-surface-container-lowest border border-outline-variant rounded-xl overflow-hidden transition-all hover:shadow-lg ${archived ? "opacity-60 grayscale" : ""}`}>
-              <div className={`h-24 ${headerColors[i % headerColors.length]} relative cursor-pointer`} onClick={() => nav(`/subjects/${s.id}/materials`)}>
+              <div className={`h-24 ${headerColors[i % headerColors.length]} relative cursor-pointer`} onClick={() => nav(`/subjects/${s.id}`)}>
                 <span className="absolute top-3 left-3 bg-primary-container/80 backdrop-blur text-on-primary-container px-2 py-1 rounded text-[10px] font-bold uppercase">{s.code}</span>
                 <span className={`absolute top-3 right-3 px-2 py-1 rounded-full text-[10px] font-bold uppercase flex items-center gap-1 ${archived ? "bg-surface-dim/80 text-on-surface" : "bg-primary-container/80 text-on-primary-container"}`}>
                   <span className={`w-2 h-2 rounded-full ${archived ? "bg-on-surface-variant" : "bg-green-400"}`} /> {archived ? "Archived" : "Active"}
@@ -105,8 +105,8 @@ export default function Subjects() {
                 </div>
                 <div className="flex items-center justify-between border-t border-outline-variant pt-3 text-sm">
                   <div className="flex items-center gap-3">
-                    <button onClick={() => nav(`/subjects/${s.id}/materials`)} className="text-secondary font-semibold flex items-center gap-1 hover:underline">
-                      <Icon name="folder_open" className="text-[18px]" /> Materials
+                    <button onClick={() => nav(`/subjects/${s.id}`)} className="text-secondary font-semibold flex items-center gap-1 hover:underline">
+                      <Icon name="open_in_new" className="text-[18px]" /> Open Subject
                     </button>
                     {canManage && (
                       <button onClick={() => nav(`/subjects/${s.id}/enroll`)} className="text-secondary font-semibold flex items-center gap-1 hover:underline">

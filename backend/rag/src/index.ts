@@ -49,7 +49,7 @@ function toQuestionArray(parsed: any): any[] {
 function schemaFor(type: string, difficulty: string): string {
   switch (type) {
     case "mcq":
-      return `Required fields: type="mcq", difficulty="${difficulty}", topic (string), prompt (string), options (array of 2-6 actual phrases copied from the source), answer (object with integer correct_index).`;
+      return `Required fields: type="mcq", difficulty="${difficulty}", topic (string), prompt (string), options (array of exactly 4 distinct phrases copied from the source, ordered as A, B, C, D), answer (object with integer correct_index from 0 to 3).`;
     case "true_false":
       return `Required fields: type="true_false", difficulty="${difficulty}", topic (string), prompt (string), options=["True","False"], answer (object with boolean correct).`;
     case "fill_blank":
@@ -64,6 +64,19 @@ function schemaFor(type: string, difficulty: string): string {
 }
 
 interface DistItem { type: string; difficulty: string; count: number; points: number }
+
+function difficultyGuidance(difficulty: string): string {
+  if (difficulty === "easy") return "Test a basic fact, definition, name, date, or simple concept.";
+  if (difficulty === "hard") return "Require analysis, comparison, explanation, or application using only the supplied content.";
+  return "Require understanding or a connection between ideas, not just recall.";
+}
+
+function sourceGroundedFact(fact: string, sources: GroundingSource[]): boolean {
+  const stop = new Set(["this", "that", "with", "from", "which", "their", "there", "about", "into", "only"]);
+  const tokens = fact.toLowerCase().match(/[a-z0-9]{4,}/g)?.filter((token) => !stop.has(token)) || [];
+  const source = sources.map((item) => item.text).join(" ").toLowerCase();
+  return new Set(tokens.filter((token) => source.includes(token))).size >= 2;
+}
 
 async function insertQuestion(
   jobId: string, subjectId: string, item: DistItem, question: any,
@@ -158,7 +171,10 @@ function documentPhrases(text: string): string[] {
   const complexities = text.match(/O\([^)]{1,30}\)/g) || [];
   const headings = Array.from(text.matchAll(/(?:^|[•.;])\s*([A-Z][A-Za-z0-9 /-]{2,35}?)(?=\s*:|\s+-)/g), (match) => match[1].trim());
   const names = text.match(/\b[A-Z][A-Za-z-]{3,}(?:\s+[A-Z][A-Za-z-]{3,}){0,2}\b/g) || [];
-  const blocked = new Set(["example", "given", "input", "output", "code", "page", "solution"]);
+  const blocked = new Set([
+    "example", "given", "input", "output", "code", "page", "solution",
+    "therefore", "however", "moreover", "thus", "hence", "note",
+  ]);
   return unique([...complexities, ...headings, ...names]).filter((value) =>
     value.length <= 60 && !blocked.has(value.toLowerCase())
   );
@@ -214,7 +230,7 @@ function deterministicQuestion(item: DistItem, source: GroundingSource, ordinal:
     const words = source.text.trim().split(/\s+/).slice(0, 24);
     quote = words.join(" ");
   }
-  if ((item.type === "mcq" || item.type === "fill_blank") && (!answerPhrase || phrases.length < 2)) return null;
+  if ((item.type === "mcq" || item.type === "fill_blank") && (!answerPhrase || phrases.length < (item.type === "mcq" ? 4 : 2))) return null;
 
   if (item.type === "mcq") {
     const complexityAnswer = /^O\(/i.test(answerPhrase);
@@ -223,12 +239,12 @@ function deterministicQuestion(item: DistItem, source: GroundingSource, ordinal:
     const distractors = (parallelDistractors.length > 0 ? parallelDistractors : phrases)
       .filter((value) => value.toLowerCase() !== answerPhrase.toLowerCase()).slice(0, 3);
     const options = unique([answerPhrase, ...distractors]);
-    if (options.length < 2) return null;
+    if (options.length !== 4) return null;
     const shift = ordinal % options.length;
     const rotated = [...options.slice(shift), ...options.slice(0, shift)];
     return {
       type: item.type, difficulty: item.difficulty, topic: topic || "Uploaded material",
-      prompt: `Which of the following correctly completes the statement below?\n${cloze}`,
+      prompt: cloze,
       options: rotated, answer: { correct_index: rotated.indexOf(answerPhrase) }, source_index: 1, source_quote: quote,
     };
   }
@@ -288,19 +304,212 @@ async function runGeneration(
   const retrievalQuery = [topic, ...dist.map((item) => `${item.difficulty} ${item.type} questions`)]
     .filter(Boolean).join("; ");
   const pool = await retrieveSources(subjectId, documentIds, retrievalQuery);
+  const factCache = new Map<string, string[]>();
 
   const genBatch = async (item: DistItem, want: number, callNumber: number) => {
-    const sources = contextFor(pool, callNumber);
-    const prompt = `You are an exam author. Write ${want} DISTINCT ${item.difficulty} ${item.type} questions${topic ? ` about "${topic}"` : ""}, using ONLY the uploaded source excerpts below.
+    // MCQ facts are extracted once and reused. Rotating context on every
+    // candidate caused repeated extraction calls and multi-minute jobs.
+    const sources = contextFor(pool, item.type === "mcq" ? 1 : callNumber);
+    if (item.type === "mcq") {
+      const sourceKey = sources.map((source) => `${source.document_id}:${source.chunk_index ?? "?"}`).join("|");
+      let facts = factCache.get(sourceKey);
+      if (!facts) {
+        const factOutput = await chat(`You are a fact extractor.
 
-Return ONLY a JSON array of exactly ${want} objects. Each object must have this schema:
+Extract exactly 5 short, important factual statements from the TEXT.
+
+Rules:
+- Use only information explicitly present in the text.
+- Add no new information and make no questions or explanations.
+- Each fact must contain one clear idea and be directly verifiable.
+- Write every fact in English.
+
+Return only five numbered lines:
+1. ...
+2. ...
+3. ...
+4. ...
+5. ...
+
+TEXT:
+${renderSources(sources)}`, {
+          temperature: 0.2, topP: 0.85, topK: 30, repeatPenalty: 1.2, numPredict: 180,
+        });
+        facts = factOutput.split(/\r?\n/).map((line) => line.trim())
+          .map((line) => line.replace(/^\s*\d+[.)]\s*/, "").trim())
+          .filter((line) => line.length >= 8 && sourceGroundedFact(line, sources)).slice(0, 5);
+        factCache.set(sourceKey, facts);
+      }
+      if (!facts.length) return { questions: [] as any[], sources };
+      const fact = facts[(callNumber - 1) % facts.length];
+
+      try {
+        const mcqOutput = await chat(`You are a quiz writer.
+
+Turn the FACT into ONE natural, standalone ${item.difficulty} multiple-choice question${topic ? ` about "${topic}"` : ""}.
+
+Rules:
+- The uploaded content is the only source of knowledge. Use only the fact; preserve its meaning and add no outside information, assumptions, or invented details.
+- Write the question and all choices in English only.
+- Preserve technical terms, symbols, and acronyms exactly as they appear in the fact. Never guess or invent an acronym expansion.
+- ${difficultyGuidance(item.difficulty)} Do not create difficulty through complicated vocabulary.
+- Use simple, natural language appropriate for students and make the item sound like a classroom quiz.
+- Test an important concept or understanding rather than a tiny incidental detail.
+- Do not copy the fact as a sentence-completion question.
+- Never refer to a document, text, passage, reading, or statement.
+- Provide exactly four concise options and exactly one correct answer.
+- Every option must contain meaningful answer text. Never output placeholders or labels such as "A", "option A", or "choice A" as option text.
+- Distractors must be plausible but clearly incorrect according to the fact. Avoid ambiguity, tricks, double negatives, and overly complex sentences.
+- If the fact cannot support one clear question and answer, return an empty JSON array.
+- Before responding, verify that the answer is supported, the wording is natural and understandable, exactly one option is correct, and the requested difficulty is satisfied.
+
+Return one JSON object only. Do not use markdown.
+Required fields:
+- type: the string "mcq"
+- difficulty: the string "${item.difficulty}"
+- topic: a short topic name
+- prompt: the complete English question
+- options: an array containing four actual answer choices in A-to-D order
+- answer: an object containing correct_index, an integer from 0 to 3
+
+Write the real question and real choices directly. Do not copy field descriptions into their values.
+
+        FACT:
+${fact}`, {
+          schema: {
+            type: "object",
+            properties: {
+              type: { type: "string", enum: ["mcq"] },
+              difficulty: { type: "string", enum: [item.difficulty] },
+              topic: { type: "string" },
+              prompt: { type: "string" },
+              options: {
+                type: "array", minItems: 4, maxItems: 4,
+                items: { type: "string", minLength: 2 },
+              },
+              answer: {
+                type: "object",
+                properties: { correct_index: { type: "integer", enum: [0, 1, 2, 3] } },
+                required: ["correct_index"],
+              },
+            },
+            required: ["type", "difficulty", "topic", "prompt", "options", "answer"],
+          },
+          temperature: 0.2, topP: 0.85, topK: 30, repeatPenalty: 1.2, numPredict: 300,
+        });
+        const questions = toQuestionArray(extractJSON(mcqOutput));
+        if (!questions.length) return { questions: [] as any[], sources };
+        const question = questions[0];
+        // Normalize harmless small-model schema drift before deterministic review.
+        question.type = "mcq";
+        question.difficulty = item.difficulty;
+        question.topic = typeof question.topic === "string" ? question.topic : (topic || "Uploaded material");
+        question.source_fact = fact;
+        if (typeof question.prompt !== "string" && typeof question.question === "string") {
+          question.prompt = question.question;
+        }
+        if (!Array.isArray(question.options)) {
+          question.options = question.options ?? question.choices ?? question.answers ?? question.alternatives;
+        }
+        if (!Array.isArray(question.options) && question.options && typeof question.options === "object") {
+          const optionObject = question.options;
+          question.options = ["A", "B", "C", "D"]
+            .map((key) => optionObject[key] ?? optionObject[key.toLowerCase()])
+            .filter((option) => option != null);
+        }
+        if (!Array.isArray(question.options)) {
+          const topLevelOptions = ["A", "B", "C", "D"]
+            .map((key) => question[key] ?? question[key.toLowerCase()] ?? question[`option_${key.toLowerCase()}`])
+            .filter((option) => option != null);
+          if (topLevelOptions.length) question.options = topLevelOptions;
+        }
+        if (typeof question.options === "string") {
+          question.options = question.options.split(/\r?\n|\s*[|;]\s*/).map((value: string) => value.trim()).filter(Boolean);
+        }
+        if (Array.isArray(question.options)) {
+          question.options = question.options.map((option: unknown) =>
+            String(typeof option === "object" && option !== null
+              ? ((option as any).text ?? (option as any).value ?? (option as any).option ?? "")
+              : option).replace(/^\s*(?:option\s*)?[A-D][.):\-]\s*/i, "").trim());
+        }
+        let reviewedIndex = -1;
+        if (Array.isArray(question.options) && question.options.length === 4) {
+          const reviewOutput = await chat(`You are an educational assessment reviewer.
+
+Use only the FACT below. Check whether exactly one choice correctly answers the QUESTION.
+If exactly one choice is directly supported, set valid to true and return its zero-based index (A=0, B=1, C=2, D=3).
+If the question is ambiguous, unsupported, or has zero/multiple correct choices, set valid to false.
+
+FACT:
+${fact}
+
+QUESTION:
+${question.prompt}
+
+CHOICES:
+${question.options.map((option: string, index: number) => `${String.fromCharCode(65 + index)}. ${option}`).join("\n")}`, {
+            schema: {
+              type: "object",
+              properties: {
+                valid: { type: "boolean" },
+                correct_index: { type: "integer", enum: [0, 1, 2, 3] },
+              },
+              required: ["valid", "correct_index"],
+            },
+            temperature: 0, topP: 0.85, topK: 30, repeatPenalty: 1.1, numPredict: 40,
+          });
+          const review = extractJSON(reviewOutput);
+          if (review?.valid === true && Number.isInteger(review.correct_index)) {
+            reviewedIndex = review.correct_index;
+          } else {
+            console.warn("MCQ answer reviewer rejected candidate");
+            return { questions: [] as any[], sources };
+          }
+        }
+        const rawAnswer = reviewedIndex >= 0 ? reviewedIndex : question.answer?.correct_index ?? question.answer?.correct ??
+          question.answer?.correct_option ?? question.answer?.correct_answer ??
+          question.correct_index ?? question.correct_option ?? question.correct_answer ?? question.correctAnswer ?? question.answer;
+        let correctIndex = -1;
+        if (typeof rawAnswer === "number" && Number.isInteger(rawAnswer)) {
+          correctIndex = rawAnswer;
+        } else if (typeof rawAnswer === "string") {
+          const value = rawAnswer.trim();
+          const letter = value.match(/^(?:option\s*)?([A-D])(?:[.):\-])?$/i);
+          if (letter) correctIndex = letter[1].toUpperCase().charCodeAt(0) - 65;
+          else if (/^[0-3]$/.test(value)) correctIndex = Number(value);
+          else if (Array.isArray(question.options)) {
+            correctIndex = question.options.findIndex((option: unknown) =>
+              String(option).trim().toLowerCase() === value.toLowerCase());
+          }
+        }
+        question.answer = { correct_index: correctIndex };
+        return { questions: [question], sources };
+      } catch (e) {
+        console.error(`three-stage MCQ generation failed (${item.difficulty})`, e);
+        return { questions: [] as any[], sources };
+      }
+    }
+
+    const prompt = `You are an expert educational assessment generator. Write up to ${want} DISTINCT ${item.difficulty} ${item.type} questions${topic ? ` about "${topic}"` : ""}, using ONLY the uploaded source excerpts below.
+
+Return ONLY a JSON array containing no more than ${want} objects. Each object must have this schema:
 ${schemaFor(item.type, item.difficulty)}
 
 Rules:
-- Every claim in the question, choices, correct answer, and rubric/pairs must be derived from the excerpts. Never use outside knowledge.
+- Use only information explicitly contained in the excerpts. Never use outside knowledge, infer unsupported facts, or invent content.
+- ${difficultyGuidance(item.difficulty)} Never make a question harder through difficult vocabulary.
+- Every question and answer must be directly supported by the excerpts. If there is not enough information for a valid question, omit it.
+- Measure understanding of the content rather than unrelated general knowledge.
+- Identify useful main ideas, facts, definitions, processes, comparisons, causes and effects, lists, statistics, and conclusions before writing questions.
+- Spread questions across different supplied excerpts and concepts. Do not concentrate all questions on the first section.
 - Question wording must stand alone. Never mention a document, source, material, passage, or excerpt, and never say "according to".
 - Use formal academic quiz language with a concise, direct question stem.
-- Write for students: use one clear idea per question and simple, easily understood wording.
+- Write one unambiguous idea per question. Avoid tricks, subjective opinions, double negatives, and wording inconsistent with the source.
+- Use natural, varied question forms appropriate to the concept. Do not repeat the same opening or rely on stock phrases such as "Which of the following correctly completes the statement below?"
+- Every prompt must be a natural, standalone examination question that tests the concept itself.
+- Never begin with or use source-referential/meta wording such as "According to the document", "Based on the passage/text", "From the article", "According to the reading", "As stated above", "The passage states", or "The document explains".
+- Never use completion wrappers such as "Which statement completes the sentence", "Complete the statement", "Fill in the blank from the passage", or "The following statement".
+- Do not turn a copied source sentence into a question by merely adding "what", "which", or a blank. First identify the taught concept and the knowledge being tested, then write a new direct question in your own wording.
 - Keep the question stem below 45 words whenever possible.
 - Keep answer choices brief, parallel in style, and clearly distinguishable.
 - Always provide the complete answer object required by the question type; never omit the correct answer, accepted answers, pairs, or essay rubric.
@@ -308,12 +517,27 @@ Rules:
 - Do not include page numbers, raw code dumps, broken extraction fragments, or unnecessary symbols.
 - Do not copy a long source passage into the question; include only the information necessary to answer it.
 - The service will attach an exact evidence sentence from the most relevant retrieved SOURCE after generation.
-- For MCQ, every choice must be a verbatim phrase appearing in an excerpt. Only one may correctly answer the prompt.
-- For matching, every left and right item must be a verbatim phrase appearing in the cited SOURCE.
+- Easy questions test explicit facts, definitions, names, or numbers. Medium questions test relationships, comparisons, meaning, or cause and effect. Hard questions test application, analysis, or interpretation that is fully supported by the excerpts.
+- For MCQ, provide exactly four distinct options. Every option must be a verbatim phrase appearing in an excerpt, exactly one option may answer the prompt, distractors must be plausible, and the correct position should vary across questions.
+- For true/false, the statement must be directly verifiable from an excerpt and have one definite truth value.
+- For a false true/false item, change only one important fact from the supported statement.
+- For fill-blank, replace exactly one important word or short phrase with _____. There must be only one correct answer.
+- For essay, ask students to explain a concept discussed in the source and provide a rubric containing the key points expected in a correct answer.
+- For matching, match source terms with their definitions; every left and right item must be supported by the cited SOURCE.
 - For fill-blank, every accepted answer must appear verbatim in source_quote.
 - If the excerpts cannot support a valid question, return fewer objects. Do not invent content or placeholders.
 - All questions must be different from each other.
-- Output a valid JSON array only. No explanation.
+- Before responding, silently verify that every item and answer is supported, every MCQ has exactly four options and one correct answer, and the set covers different parts of the supplied content.
+- Output a valid JSON array only. No prose or markdown.
+
+Required internal workflow (perform silently before producing JSON):
+1. Read every supplied source excerpt completely.
+2. Treat each labeled SOURCE and its coherent paragraphs/topics as logical sections.
+3. Extract the key concepts from every section: main ideas, facts, definitions, processes, comparisons, causes and effects, lists, statistics, and conclusions.
+4. Rank those concepts by their importance to understanding the supplied content. Prefer central and repeatedly supported concepts over incidental details.
+5. Allocate questions proportionally across the sections and important concepts. Ensure broad coverage; do not take all questions from one section when multiple sections can support valid questions.
+6. Verify the correct answer for every candidate against the supplied source text. Reject any candidate whose answer is absent, ambiguous, or only inferable through outside knowledge.
+7. Return only the validated questions in the required JSON schema above.
 
 Uploaded source excerpts:
 ${renderSources(sources)}`;
@@ -353,35 +577,32 @@ ${renderSources(sources)}`;
     let produced = 0;
     let call = 0;
     // One batched LLM call per batch: retrieve -> augment -> generate.
-    const maxCalls = Math.ceil(target / ARRAY_BATCH);
+    // Natural wording is mandatory, so retry rejected model candidates instead
+    // of replacing them with copied-sentence or cloze templates.
+    // Over-generate at roughly a 10:3 ratio, then retain only the first
+    // `target` candidates that pass every style and grounding validator.
+    // Example: target=3 -> candidate budget=10 -> keep first 3 valid.
+    const maxCalls = Math.max(target, Math.ceil(target * 20 / 3));
     while (produced < target && call < maxCalls) {
       call++;
-      const batch = await genBatch(item, Math.min(ARRAY_BATCH, target - produced), call);
+      // Small local models produce substantially more reliable JSON and more
+      // varied wording when composing one fully validated item at a time.
+      const batch = await genBatch(item, 1, call);
       for (const question of batch.questions) {
         if (produced >= target) break;
         if (await tryInsert(item, question, batch.sources)) produced++;
       }
     }
-    // The fallback is assembled directly from exact uploaded-document phrases;
-    // unlike an LLM fallback, its answer and distractor provenance is mechanical.
-    let fallbackAttempt = 0;
-    while (produced < target && fallbackAttempt < pool.length * 3) {
-      const source = pool[fallbackAttempt % pool.length];
-      const candidate = deterministicQuestion(item, source, fallbackAttempt, topic);
-      fallbackAttempt++;
-      if (!candidate) continue;
-      const normalizedPrompt = candidate.prompt.toLowerCase().replace(/\s+/g, " ").trim();
-      if (seen.has(normalizedPrompt)) continue;
-      const grounding = validateGroundedQuestion(candidate, item.type, [source]);
-      if (!grounding.valid || !grounding.source || !grounding.sourceQuote) continue;
-      seen.add(normalizedPrompt);
-      await insertQuestion(jobId, subjectId, item, candidate, grounding.sourceQuote, grounding.source.document_id);
-      produced++;
-    }
     if (produced < target) {
-      throw new Error(
-        `Generated ${produced}/${target} validated ${item.type}/${item.difficulty} questions. ` +
-        "The remaining candidates were rejected because their questions, choices, or answers were not fully supported by uploaded documents."
+      if (produced === 0) {
+        throw new Error(
+          `Generated 0/${target} validated ${item.type}/${item.difficulty} questions. ` +
+          "All candidates were rejected because they were unnatural, ambiguous, or not sufficiently grounded."
+        );
+      }
+      console.warn(
+        `Partial generation: kept ${produced}/${target} validated ${item.type}/${item.difficulty} questions; ` +
+        "rejected candidates were discarded."
       );
     }
     console.log(`item ${item.type}/${item.difficulty}: produced ${produced}/${target} validated questions in ${call} LLM call(s)`);

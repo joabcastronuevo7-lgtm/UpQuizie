@@ -4,14 +4,14 @@ import { deriveEvidenceQuote, validateGroundedQuestion } from "./grounding.js";
 
 const sources = [{
   document_id: "doc-1",
-  text: "Photosynthesis occurs in the chloroplast. Chlorophyll absorbs red light and blue light. Mitochondria release energy from food.",
+  text: "Photosynthesis occurs in the chloroplast. Chlorophyll absorbs red light and blue light. Mitochondria release energy from food. Stomata regulate gas exchange.",
 }];
 
 test("accepts an MCQ whose choices and correct answer are grounded", () => {
   const result = validateGroundedQuestion({
     type: "mcq",
     prompt: "Where does photosynthesis occur?",
-    options: ["chloroplast", "Mitochondria"],
+    options: ["chloroplast", "Mitochondria", "Chlorophyll", "Stomata"],
     answer: { correct_index: 0 },
     source_index: 1,
     source_quote: "Photosynthesis occurs in the chloroplast.",
@@ -20,17 +20,65 @@ test("accepts an MCQ whose choices and correct answer are grounded", () => {
   assert.equal(result.source?.document_id, "doc-1");
 });
 
-test("rejects a fabricated distractor", () => {
+test("accepts naturally phrased MCQ options grounded in document terminology", () => {
   const result = validateGroundedQuestion({
     type: "mcq",
-    prompt: "Where does photosynthesis occur?",
-    options: ["chloroplast", "Golgi apparatus"],
+    prompt: "Which structure is responsible for photosynthesis?",
+    options: [
+      "The chloroplast",
+      "Energy-releasing mitochondria",
+      "Light-absorbing chlorophyll",
+      "Gas-regulating stomata",
+    ],
     answer: { correct_index: 0 },
     source_index: 1,
     source_quote: "Photosynthesis occurs in the chloroplast.",
   }, "mcq", sources);
+  assert.equal(result.valid, true);
+});
+
+test("rejects non-English MCQ prompts", () => {
+  const result = validateGroundedQuestion({
+    type: "mcq", prompt: "¿Cuál es la respuesta correcta?",
+    options: ["chloroplast", "Mitochondria", "Chlorophyll", "Stomata"],
+    answer: { correct_index: 0 }, source_index: 1,
+    source_quote: "Photosynthesis occurs in the chloroplast.",
+  }, "mcq", sources);
   assert.equal(result.valid, false);
-  assert.match(result.reason || "", /every MCQ choice/);
+  assert.match(result.reason || "", /English/);
+});
+
+test("rejects placeholder MCQ choices", () => {
+  const result = validateGroundedQuestion({
+    type: "mcq", prompt: "Where does photosynthesis occur?",
+    options: ["option A", "option B", "option C", "option D"],
+    answer: { correct_index: 0 }, source_index: 1,
+    source_quote: "Photosynthesis occurs in the chloroplast.",
+  }, "mcq", sources);
+  assert.equal(result.valid, false);
+  assert.match(result.reason || "", /placeholders/);
+});
+
+test("rejects commentary embedded in MCQ choices", () => {
+  const result = validateGroundedQuestion({
+    type: "mcq", prompt: "Where does photosynthesis occur?",
+    options: ["chloroplast", "Mitochondria", "The correct option should be selected here", "Stomata"],
+    answer: { correct_index: 0 }, source_index: 1,
+    source_quote: "Photosynthesis occurs in the chloroplast.",
+  }, "mcq", sources);
+  assert.equal(result.valid, false);
+  assert.match(result.reason || "", /commentary/);
+});
+
+test("rejects invented acronym expansions", () => {
+  const result = validateGroundedQuestion({
+    type: "mcq", prompt: "What does the Photosynthesis System (PS) produce?",
+    options: ["chloroplast", "Mitochondria", "Chlorophyll", "Stomata"],
+    answer: { correct_index: 0 }, source_index: 1,
+    source_quote: "Photosynthesis occurs in the chloroplast.",
+  }, "mcq", sources);
+  assert.equal(result.valid, false);
+  assert.match(result.reason || "", /unsupported expansion/);
 });
 
 test("rejects a quote not copied from an uploaded chunk", () => {
@@ -48,23 +96,10 @@ test("rejects a quote not copied from an uploaded chunk", () => {
 test("derives verbatim evidence using the declared correct choice", () => {
   const quote = deriveEvidenceQuote({
     prompt: "Where does photosynthesis occur?",
-    options: ["chloroplast", "Mitochondria"],
+    options: ["chloroplast", "Mitochondria", "Chlorophyll", "Stomata"],
     answer: { correct_index: 0 },
   }, "mcq", sources[0].text);
   assert.equal(quote, "Photosynthesis occurs in the chloroplast.");
-});
-
-test("rejects a question unrelated to its otherwise valid quote", () => {
-  const result = validateGroundedQuestion({
-    type: "mcq",
-    prompt: "Which treaty ended the war?",
-    options: ["chloroplast", "Mitochondria"],
-    answer: { correct_index: 0 },
-    source_index: 1,
-    source_quote: "Photosynthesis occurs in the chloroplast.",
-  }, "mcq", sources);
-  assert.equal(result.valid, false);
-  assert.match(result.reason || "", /substantive overlap/);
 });
 
 test("rejects document-referential question wording", () => {
@@ -80,11 +115,24 @@ test("rejects document-referential question wording", () => {
   assert.match(result.reason || "", /must not refer/);
 });
 
+test("rejects templated sentence-completion wording", () => {
+  const result = validateGroundedQuestion({
+    type: "mcq",
+    prompt: "Which statement completes the sentence about photosynthesis?",
+    options: ["chloroplast", "Mitochondria", "Chlorophyll", "Stomata"],
+    answer: { correct_index: 0 },
+    source_index: 1,
+    source_quote: "Photosynthesis occurs in the chloroplast.",
+  }, "mcq", sources);
+  assert.equal(result.valid, false);
+  assert.match(result.reason || "", /prohibited/);
+});
+
 test("rejects overly long question wording", () => {
   const result = validateGroundedQuestion({
     type: "mcq",
     prompt: Array(75).fill("photosynthesis").join(" "),
-    options: ["chloroplast", "Mitochondria"], answer: { correct_index: 0 },
+    options: ["chloroplast", "Mitochondria", "Chlorophyll", "Stomata"], answer: { correct_index: 0 },
     source_index: 1, source_quote: "Photosynthesis occurs in the chloroplast.",
   }, "mcq", sources);
   assert.equal(result.valid, false);

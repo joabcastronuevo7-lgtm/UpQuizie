@@ -83,6 +83,16 @@ function SubjectMaterials({ subjectId, subjects }: { subjectId: string; subjects
         </p>
       </div>
 
+      <div className="flex items-center gap-1 border-b border-outline-variant mb-7">
+        <Link to={`/subjects/${subjectId}`}
+          className="px-5 py-3 text-on-surface-variant font-semibold flex items-center gap-2 hover:text-secondary">
+          <Icon name="quiz" className="text-[20px]" /> Published Quizzes
+        </Link>
+        <span className="px-5 py-3 border-b-2 border-secondary text-secondary font-semibold flex items-center gap-2">
+          <Icon name="folder_open" className="text-[20px]" /> Materials
+        </span>
+      </div>
+
       <div
         onClick={() => fileRef.current?.click()}
         className="bg-surface-container-lowest border-2 border-dashed border-outline-variant rounded-xl p-10 flex flex-col items-center text-center cursor-pointer hover:border-secondary mb-8"

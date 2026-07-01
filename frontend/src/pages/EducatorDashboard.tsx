@@ -62,7 +62,9 @@ export default function EducatorDashboard() {
   const total = dist.reduce((s, r) => s + (Number(r.count) || 0), 0);
 
   useEffect(() => {
-    if (job?.status === "done") qc.invalidateQueries({ queryKey: ["generated", sid] });
+    if (job?.status === "done" || job?.status === "error") {
+      qc.invalidateQueries({ queryKey: ["generated", sid] });
+    }
   }, [job?.status, qc, sid]);
 
   return (
@@ -157,8 +159,8 @@ export default function EducatorDashboard() {
               {job && (
                 <div className="rounded-lg border border-outline-variant p-4 bg-surface-container-low text-sm">
                   {job.status === "running" && <p className="flex items-center gap-2"><Icon name="sync" className="animate-spin text-secondary" /> Generating {job.generated} of {job.requested}…</p>}
-                  {job.status === "done" && <p className="text-secondary flex items-center gap-2"><Icon name="check_circle" /> Done — {job.generated} generated. <a href="#review-questions" className="font-semibold underline">Review →</a></p>}
-                  {job.status === "error" && <p className="text-error">Failed: {job.error}</p>}
+                  {job.status === "done" && <p className="text-secondary flex items-center gap-2"><Icon name="check_circle" /> Done — {job.generated} validated question{job.generated === 1 ? "" : "s"} kept. <a href="#review-questions" className="font-semibold underline">Review →</a></p>}
+                  {job.status === "error" && <p className="text-error">Generation stopped after keeping {job.generated} validated question{job.generated === 1 ? "" : "s"}: {job.error}</p>}
                 </div>
               )}
               {msg && <p className="text-sm text-error">{msg}</p>}

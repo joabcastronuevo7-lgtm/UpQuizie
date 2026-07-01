@@ -14,6 +14,7 @@ import TakeExam from "./pages/TakeExam";
 import Results from "./pages/Results";
 import Analytics from "./pages/Analytics";
 import AdminUsers from "./pages/AdminUsers";
+import SubjectDetail from "./pages/SubjectDetail";
 
 function Protected({ children }: { children: JSX.Element }) {
   const { user, loading } = useAuth();
@@ -27,8 +28,7 @@ function Home() {
   if (loading) return <div className="p-10 text-on-surface-variant">Loading…</div>;
   if (!user) return <Navigate to="/login" replace />;
   if (user.role === "admin") return <Navigate to="/admin/users" replace />;
-  if (user.role === "educator") return <Navigate to="/educator" replace />;
-  return <Navigate to="/student" replace />;
+  return <Navigate to="/subjects" replace />;
 }
 
 export default function App() {
@@ -47,6 +47,7 @@ export default function App() {
       <Route path="/sessions" element={<Protected><ExamSessions /></Protected>} />
       <Route path="/score-review" element={<Protected><ScoreReview /></Protected>} />
       <Route path="/subjects" element={<Protected><Subjects /></Protected>} />
+      <Route path="/subjects/:id" element={<Protected><SubjectDetail /></Protected>} />
       <Route path="/exams" element={<Protected><ExamsList /></Protected>} />
       <Route path="/exams/:id/take" element={<Protected><TakeExam /></Protected>} />
       <Route path="/attempts/:id/results" element={<Protected><Results /></Protected>} />

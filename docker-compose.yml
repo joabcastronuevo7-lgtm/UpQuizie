@@ -35,7 +35,7 @@ services:
       DATABASE_URL: "postgres://upquizie:upquizie@postgres:5432/examdb?sslmode=disable"
       JWT_SECRET: "${JWT_SECRET:-change-me-in-production}"
       RAG_SERVICE_URL: "http://rag:7000"
-      CORS_ORIGINS: "http://localhost:8080,http://localhost:5173"
+      CORS_ORIGINS: "http://localhost:8080,http://localhost:5173,http://127.0.0.1:5173"
       UPLOAD_DIR: "/app/uploads"
     volumes:
       - uploads:/app/uploads
@@ -61,7 +61,8 @@ services:
       OLLAMA_URL: "http://ollama:11434"
       DATABASE_URL: "postgres://upquizie:upquizie@postgres:5432/examdb"
       EMBED_MODEL: "${EMBED_MODEL:-nomic-embed-text}"
-      LLM_MODEL: "${LLM_MODEL:-gemma3:1b}"
+      LLM_MODEL: "${LLM_MODEL:-gemma2:2b}"
+      LLM_NUM_CTX: "${LLM_NUM_CTX:-2048}"
       EMBED_DIM: "${EMBED_DIM:-768}"
       RAG_TOP_K: "${RAG_TOP_K:-2}"
       RAG_QUERY_CACHE_SIZE: "${RAG_QUERY_CACHE_SIZE:-100}"

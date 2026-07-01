@@ -12,13 +12,11 @@ const navByRole: Record<string, NavItem[]> = {
   student: [
     { label: "Dashboard", icon: "dashboard", to: "/student" },
     { label: "Subjects", icon: "library_books", to: "/subjects" },
-    { label: "Exams", icon: "assignment", to: "/exams" },
   ],
   educator: [
     { label: "Subjects", icon: "book", to: "/subjects" },
     { label: "Learning Materials", icon: "folder_open", to: "/materials" },
     { label: "Generate & Review", icon: "auto_awesome", to: "/educator" },
-    { label: "Exams", icon: "quiz", to: "/exams" },
     { label: "Exam Sessions", icon: "live_tv", to: "/sessions" },
     { label: "Analytics", icon: "analytics", to: "/analytics" },
   ],
