@@ -9,6 +9,13 @@ interface JobStatus { status: "running" | "done" | "error"; requested: number; g
 interface GenerationOptions { documents: { id: string; filename: string }[]; topics: string[] }
 
 const QUESTION_TYPES = ["mcq", "true_false", "fill_blank", "essay", "matching"];
+const TYPE_LABELS: Record<string, string> = {
+  mcq: "Multiple Choice",
+  true_false: "True or False",
+  fill_blank: "Fill in the Blank",
+  matching: "Matching Type",
+  essay: "Essay",
+};
 
 export default function EducatorDashboard() {
   const qc = useQueryClient();
@@ -116,7 +123,7 @@ export default function EducatorDashboard() {
                       <Mini label="Type">
                         <select value={row.type} onChange={(e) => updateRow(i, { type: e.target.value })}
                           className="w-full bg-white border border-outline-variant rounded px-2 py-1.5 text-sm">
-                          {QUESTION_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                          {QUESTION_TYPES.map((t) => <option key={t} value={t}>{TYPE_LABELS[t]}</option>)}
                         </select>
                       </Mini>
                       <Mini label="Difficulty">

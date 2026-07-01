@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import Layout, { Icon } from "../components/Layout";
 import { api, Exam } from "../api";
 import { useAuth } from "../auth";
@@ -108,18 +108,56 @@ export default function ExamsList() {
 }
 
 function ExamCard({ e }: { e: Exam }) {
+  const qc = useQueryClient();
+  const del = useMutation({
+    mutationFn: () => api.del(`/exams/${e.id}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["exams"] }),
+  });
+  const publish = useMutation({
+    mutationFn: () => api.post(`/exams/${e.id}/publish`, {}),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["exams"] }),
+  });
+
   return (
     <div className="bg-surface-container-lowest rounded-xl border border-outline-variant p-6 flex flex-col">
       <div className="flex justify-between items-start mb-4">
         <span className={`px-3 py-1 rounded-full text-xs uppercase tracking-wider ${e.status === "published" ? "bg-secondary-container text-on-secondary-container" : "bg-surface-container-high text-on-surface-variant"}`}>{e.status}</span>
-        <Icon name="quiz" className="text-secondary" />
+        <div className="flex items-center gap-2">
+          <Icon name="quiz" className="text-secondary" />
+          <button
+            onClick={() => {
+              if (confirm(`Delete exam "${e.title}"? This also removes its questions and any student attempts. This cannot be undone.`)) {
+                del.mutate();
+              }
+            }}
+            disabled={del.isPending}
+            className="p-1 text-on-surface-variant hover:text-error transition-colors disabled:opacity-50"
+            title="Delete exam"
+          >
+            <Icon name="delete" className="text-[20px]" />
+          </button>
+        </div>
       </div>
       <h3 className="font-headline text-lg text-primary mb-1">{e.title}</h3>
       <p className="text-on-surface-variant text-sm mb-4">{e.subject}</p>
-      <div className="space-y-2 text-sm text-on-surface-variant">
+      <div className="space-y-2 text-sm text-on-surface-variant mb-4">
         <div className="flex items-center gap-2"><Icon name="schedule" className="text-[18px]" /> {e.duration_min} min</div>
         <div className="flex items-center gap-2"><Icon name="grade" className="text-[18px]" /> {e.total_points} points</div>
       </div>
+      {e.status === "published" ? (
+        <button disabled
+          className="mt-auto w-full bg-secondary-container text-on-secondary-container py-2.5 rounded-lg font-semibold flex items-center justify-center gap-2 cursor-default">
+          <Icon name="check_circle" className="text-[20px]" /> Published
+        </button>
+      ) : (
+        <button onClick={() => publish.mutate()} disabled={publish.isPending}
+          className="mt-auto w-full bg-primary text-on-primary py-2.5 rounded-lg font-semibold flex items-center justify-center gap-2 disabled:opacity-50">
+          <Icon name="publish" className="text-[20px]" /> {publish.isPending ? "Publishing…" : "Publish"}
+        </button>
+      )}
+      {(del.isError || publish.isError) && (
+        <p className="text-error text-xs mt-3">{((del.error || publish.error) as Error).message}</p>
+      )}
     </div>
   );
 }

@@ -293,6 +293,20 @@ func publishExam(c *gin.Context) {
 	c.JSON(200, gin.H{"ok": true})
 }
 
+func deleteExam(c *gin.Context) {
+	tag, err := db.Exec(context.Background(),
+		`DELETE FROM exams WHERE id=$1`, c.Param("id"))
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		c.JSON(404, gin.H{"error": "exam not found"})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true})
+}
+
 func getExam(c *gin.Context) {
 	var id, title, status string
 	var dur, pts int

@@ -96,6 +96,7 @@ func main() {
 		auth.GET("/exams/:id", getExam)
 		auth.GET("/exams/:id/questions", listExamQuestions)
 		auth.POST("/exams/:id/publish", requireRole("educator", "admin"), publishExam)
+		auth.DELETE("/exams/:id", requireRole("educator", "admin"), deleteExam)
 
 		// Attempts & scoring
 		auth.POST("/exams/:id/attempts", startAttempt)

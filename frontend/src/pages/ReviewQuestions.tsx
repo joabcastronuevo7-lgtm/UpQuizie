@@ -38,7 +38,7 @@ export default function ReviewQuestions({ embedded = false, subjectId: controlle
   const [localSubjectId, setLocalSubjectId] = useState("");
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const [selected, setSelected] = useState<Record<string, boolean>>({});
-  const [examTitle, setExamTitle] = useState("AI-Generated Exam");
+  const [examTitle, setExamTitle] = useState("");
   const [msg, setMsg] = useState("");
 
   const { data: subjects = [] } = useQuery({
