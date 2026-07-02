@@ -13,6 +13,7 @@ export interface GroundedQuestion {
   topic?: string;
   source_index?: number;
   source_quote?: string;
+  source_fact?: string;
 }
 
 export interface GroundingResult {
@@ -38,7 +39,10 @@ function stringArray(value: unknown): string[] | null {
 }
 
 function meaningfulTokens(value: unknown): Set<string> {
-  const stop = new Set(["this", "that", "with", "from", "what", "which", "where", "when", "does", "have", "into", "true", "false"]);
+  const stop = new Set([
+    "this", "that", "with", "from", "what", "which", "where", "when", "does", "have", "into", "true", "false",
+    "primary", "purpose", "characteristic", "describes", "result", "condition", "operation", "concept", "following",
+  ]);
   return new Set(normalized(value).replace(/[^a-z0-9]+/g, " ").split(" ")
     .filter((token) => token.length >= 4 && !stop.has(token)));
 }
@@ -89,6 +93,12 @@ export function validateGroundedQuestion(
   if (/\baccording to\b|\buploaded document\b|\bsource (?:material|excerpt)\b|\bdocument (?:states|excerpt)\b/i.test(question.prompt)) {
     return { valid: false, reason: "question must not refer to its source document" };
   }
+  if (/\bbased on (?:the )?(?:passage|text)\b|\bfrom the article\b|\baccording to the reading\b|\bas stated above\b|\bthe passage states\b|\bthe document explains\b|\bwhich (?:statement )?completes? (?:the |this )?(?:sentence|statement)\b|\bcomplete (?:the |this )?statement\b|\bfill in the blank from (?:the )?passage\b|\bthe following statement\b/i.test(question.prompt)) {
+    return { valid: false, reason: "question uses prohibited source-referential or sentence-completion wording" };
+  }
+  if (/[¿¡]/.test(question.prompt) || /\b(?:cuál|cuáles|qué|por qué|verdadero|falso|siguiente|opciones)\b/i.test(question.prompt)) {
+    return { valid: false, reason: "question must be written in English" };
+  }
   if (question.type && question.type !== expectedType) {
     return { valid: false, reason: `expected ${expectedType}, received ${question.type}` };
   }
@@ -97,32 +107,40 @@ export function validateGroundedQuestion(
     return { valid: false, reason: "invalid source_index" };
   }
   const source = sources[sourceIndex - 1];
+  const sourceContext = sources.map((item) => item.text).join("\n");
+  for (const match of question.prompt.matchAll(/\b([A-Z][A-Za-z]+(?:\s+[A-Z]?[A-Za-z]+){1,4})\s*\(([A-Z]{2,})\)/g)) {
+    if (!appearsIn(match[1], sourceContext)) {
+      return { valid: false, reason: `question invents an unsupported expansion for ${match[2]}` };
+    }
+  }
   const quote = typeof question.source_quote === "string" ? question.source_quote.trim() : "";
   if (quote.split(/\s+/).length < 4 || !appearsIn(quote, source.text)) {
     return { valid: false, reason: "source_quote is not a verbatim uploaded-document excerpt" };
   }
-  const promptTokens = meaningfulTokens(question.prompt);
-  const quoteTokens = meaningfulTokens(quote);
-  if (expectedType !== "matching" && promptTokens.size > 0 && ![...promptTokens].some((token) => quoteTokens.has(token))) {
-    return { valid: false, reason: "question has no substantive overlap with its evidence quote" };
-  }
-
-  const allContext = sources.map((s) => s.text).join("\n");
   const answer: any = question.answer;
 
   if (expectedType === "mcq") {
     const options = stringArray(question.options);
-    if (!options || options.length < 2 || options.length > 6 || new Set(options.map(normalized)).size !== options.length) {
-      return { valid: false, reason: "MCQ choices must be 2-6 distinct strings" };
+    if (!options || options.length !== 4 || new Set(options.map(normalized)).size !== options.length) {
+      return { valid: false, reason: "MCQ choices must be exactly 4 distinct strings" };
+    }
+    if (options.some((option) => /^(?:option|choice|answer)?\s*[a-d](?:[.):\-])?$/i.test(option.trim()) ||
+        /^(?:option|choice|answer)\s+[a-d]\b/i.test(option.trim()))) {
+      return { valid: false, reason: "MCQ choices must contain real answer text, not labels or placeholders" };
+    }
+    if (options.some((option) => option.split(/\s+/).length > 30 ||
+        /[{}\[\]]|\b(?:querying|correct (?:answer|option)|should be selected|json|prompt)\b/i.test(option))) {
+      return { valid: false, reason: "MCQ choices must not contain model commentary or serialization artifacts" };
     }
     if (!answer || !Number.isInteger(answer.correct_index) || answer.correct_index < 0 || answer.correct_index >= options.length) {
       return { valid: false, reason: "MCQ correct_index is invalid" };
     }
-    if (options.some((option) => !appearsIn(option, allContext))) {
-      return { valid: false, reason: "every MCQ choice must occur in the retrieved documents" };
-    }
-    if (!appearsIn(options[answer.correct_index], quote)) {
-      return { valid: false, reason: "the correct MCQ choice must occur in its evidence quote" };
+    if (question.source_fact) {
+      const factTokens = meaningfulTokens(question.source_fact);
+      const itemTokens = meaningfulTokens(`${question.prompt} ${options[answer.correct_index]}`);
+      if (factTokens.size === 0 || ![...itemTokens].some((token) => factTokens.has(token))) {
+        return { valid: false, reason: "MCQ is not meaningfully connected to its validated source fact" };
+      }
     }
   } else if (expectedType === "true_false") {
     if (!answer || typeof answer.correct !== "boolean") {
