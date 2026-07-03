@@ -63,6 +63,8 @@ services:
       EMBED_MODEL: "${EMBED_MODEL:-nomic-embed-text}"
       LLM_MODEL: "${LLM_MODEL:-gemma2:2b}"
       LLM_NUM_CTX: "${LLM_NUM_CTX:-2048}"
+      # Concurrent LLM generations; keep <= ollama's OLLAMA_NUM_PARALLEL (4).
+      GEN_CONCURRENCY: "${GEN_CONCURRENCY:-4}"
       EMBED_DIM: "${EMBED_DIM:-768}"
       RAG_TOP_K: "${RAG_TOP_K:-2}"
       RAG_QUERY_CACHE_SIZE: "${RAG_QUERY_CACHE_SIZE:-100}"

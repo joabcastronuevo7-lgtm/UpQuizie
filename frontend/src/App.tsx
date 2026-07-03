@@ -17,6 +17,7 @@ import StudentPerformance from "./pages/StudentPerformance";
 import Settings from "./pages/Settings";
 import AdminUsers from "./pages/AdminUsers";
 import SubjectDetail from "./pages/SubjectDetail";
+import ExamMonitor from "./pages/ExamMonitor";
 
 function Protected({ children }: { children: JSX.Element }) {
   const { user, loading } = useAuth();
@@ -54,6 +55,7 @@ export default function App() {
       <Route path="/subjects/:id" element={<Protected><SubjectDetail /></Protected>} />
       <Route path="/exams" element={<Protected><ExamsList /></Protected>} />
       <Route path="/exams/:id/take" element={<Protected><TakeExam /></Protected>} />
+      <Route path="/exams/:id/monitor" element={<Protected><ExamMonitor /></Protected>} />
       <Route path="/attempts/:id/results" element={<Protected><Results /></Protected>} />
       <Route path="/admin/users" element={<Protected><AdminUsers /></Protected>} />
       <Route path="*" element={<Home />} />

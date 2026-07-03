@@ -120,14 +120,17 @@ CREATE TABLE exam_questions (
 CREATE TYPE attempt_status AS ENUM ('in_progress', 'completed', 'needs_review');
 
 CREATE TABLE student_exam_attempts (
-    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    exam_id      UUID NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
-    student_id   UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    status       attempt_status NOT NULL DEFAULT 'in_progress',
-    score        INT,
-    total_points INT,
-    started_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    submitted_at TIMESTAMPTZ,
+    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    exam_id        UUID NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+    student_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    status         attempt_status NOT NULL DEFAULT 'in_progress',
+    score          INT,
+    total_points   INT,
+    answered_count INT NOT NULL DEFAULT 0,       -- live progress reported via heartbeat
+    last_seen_at   TIMESTAMPTZ,                  -- last heartbeat while taking the exam
+    focused        BOOLEAN NOT NULL DEFAULT TRUE, -- exam tab focus (live proctoring signal)
+    started_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    submitted_at   TIMESTAMPTZ,
     UNIQUE (exam_id, student_id)
 );
 

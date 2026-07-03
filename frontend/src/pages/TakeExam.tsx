@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import Layout, { Icon } from "../components/Layout";
-import { api, Exam, Question } from "../api";
+import { api, ApiError, Exam, Question } from "../api";
 
 export default function TakeExam() {
   const { id } = useParams();
@@ -13,6 +13,7 @@ export default function TakeExam() {
   const [idx, setIdx] = useState(0);
   const [busy, setBusy] = useState(false);
   const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
+  const [startError, setStartError] = useState("");
 
   // Access gating
   const [needCode, setNeedCode] = useState<boolean | null>(null);
@@ -28,15 +29,30 @@ export default function TakeExam() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
+  // Each exam may only be taken once. startAttempt either begins a fresh
+  // attempt, resumes the caller's own in-progress one (page refresh), or
+  // rejects with 409 + attempt_id when the student has already submitted —
+  // in that case we send them straight to their results instead of retaking it.
   async function begin() {
     if (!id || started) return;
     setStarted(true);
-    const ex = await api.get<Exam>(`/exams/${id}`);
-    setExam(ex);
-    setSecondsLeft((ex.duration_min || 60) * 60);
-    setQuestions(await api.get<Question[]>(`/exams/${id}/questions`));
-    const a = await api.post<{ attempt_id: string }>(`/exams/${id}/attempts`);
-    setAttemptId(a.attempt_id);
+    try {
+      const a = await api.post<{ attempt_id: string; started_at?: string }>(`/exams/${id}/attempts`);
+      const ex = await api.get<Exam>(`/exams/${id}`);
+      setExam(ex);
+      const durationSec = (ex.duration_min || 60) * 60;
+      const elapsed = a.started_at ? Math.floor((Date.now() - new Date(a.started_at).getTime()) / 1000) : 0;
+      setSecondsLeft(Math.max(0, durationSec - elapsed));
+      setQuestions(await api.get<Question[]>(`/exams/${id}/questions`));
+      setAttemptId(a.attempt_id);
+    } catch (e) {
+      const err = e as ApiError;
+      if (err.body?.attempt_id) {
+        nav(`/attempts/${err.body.attempt_id}/results`, { replace: true });
+        return;
+      }
+      setStartError(err.message || "Could not start this exam.");
+    }
   }
 
   async function verifyCode() {
@@ -61,6 +77,39 @@ export default function TakeExam() {
 
   const setResp = (qid: string, value: any) => setResponses((r) => ({ ...r, [qid]: value }));
 
+  // Count questions the student has actually answered (drives the live monitor).
+  const answeredCount = questions.reduce((n, qq) => {
+    const r = responses[qq.id];
+    const answered =
+      r != null && (r.index != null || r.value != null || (typeof r.text === "string" && r.text.trim() !== ""));
+    return answered ? n + 1 : n;
+  }, 0);
+  const answeredRef = useRef(0);
+  answeredRef.current = answeredCount;
+
+  // Heartbeat: report progress + tab focus so educators can monitor the session.
+  useEffect(() => {
+    if (!attemptId) return;
+    let focused = typeof document !== "undefined" ? !document.hidden : true;
+    const send = () =>
+      api.post(`/attempts/${attemptId}/heartbeat`, { answered_count: answeredRef.current, focused }).catch(() => {});
+    const onVis = () => { focused = !document.hidden; send(); };
+    const onFocus = () => { focused = true; send(); };
+    const onBlur = () => { focused = false; send(); };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("blur", onBlur);
+    send();
+    const iv = setInterval(send, 10000);
+    return () => {
+      clearInterval(iv);
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("blur", onBlur);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [attemptId]);
+
   async function submit() {
     if (!attemptId || busy) return;
     setBusy(true);
@@ -68,7 +117,11 @@ export default function TakeExam() {
       const answers = questions.map((q) => ({ question_id: q.id, response: responses[q.id] ?? {} }));
       await api.post(`/attempts/${attemptId}/submit`, { answers });
       nav(`/attempts/${attemptId}/results`);
-    } catch (e: any) { alert(e.message); } finally { setBusy(false); }
+    } catch (e) {
+      const err = e as ApiError;
+      if (err.status === 409) { nav(`/attempts/${attemptId}/results`, { replace: true }); return; }
+      alert(err.message);
+    } finally { setBusy(false); }
   }
 
   const fmt = (s: number) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
@@ -90,6 +143,23 @@ export default function TakeExam() {
             <button onClick={() => nav("/exams")} className="flex-1 border border-primary text-primary py-3 rounded-lg font-semibold">Cancel</button>
             <button onClick={verifyCode} className="flex-1 bg-primary text-on-primary py-3 rounded-lg font-semibold">Verify &amp; Start</button>
           </div>
+        </div>
+      </Layout>
+    );
+  }
+
+  if (startError) {
+    return (
+      <Layout title="Exam">
+        <div className="max-w-md mx-auto bg-surface-container-lowest border border-outline-variant rounded-xl p-8 mt-10 text-center">
+          <div className="w-16 h-16 mx-auto bg-error-container text-on-error-container rounded-full flex items-center justify-center mb-4">
+            <Icon name="block" className="text-[32px]" />
+          </div>
+          <h2 className="font-headline text-2xl text-primary mb-2">Can't Start Exam</h2>
+          <p className="text-on-surface-variant mb-6">{startError}</p>
+          <button onClick={() => nav("/exams")} className="w-full bg-primary text-on-primary py-3 rounded-lg font-semibold">
+            Back to Exams
+          </button>
         </div>
       </Layout>
     );

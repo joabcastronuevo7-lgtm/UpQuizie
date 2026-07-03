@@ -353,23 +353,41 @@ func listExamQuestions(c *gin.Context) {
 
 // ---------- Attempts & scoring ----------
 
+// startAttempt begins a new attempt, or resumes the caller's own in-progress
+// one (e.g. after a page refresh). Once an attempt has been submitted
+// (completed/needs_review), students may not start a new one for the same
+// exam — each exam may be taken exactly once.
 func startAttempt(c *gin.Context) {
 	examID := c.Param("id")
 	userID, _ := c.Get("userID")
-	var id string
-	err := db.QueryRow(context.Background(),
-		`INSERT INTO student_exam_attempts (exam_id,student_id) VALUES ($1,$2)
-		 ON CONFLICT (exam_id,student_id) DO UPDATE SET started_at=student_exam_attempts.started_at
-		 RETURNING id`, examID, userID).Scan(&id)
-	if err != nil {
+	ctx := context.Background()
+
+	var id, status string
+	var startedAt time.Time
+	err := db.QueryRow(ctx,
+		`SELECT id, status, started_at FROM student_exam_attempts WHERE exam_id=$1 AND student_id=$2`,
+		examID, userID).Scan(&id, &status, &startedAt)
+	if err == nil {
+		if status != "in_progress" {
+			c.JSON(409, gin.H{"error": "You have already taken this exam.", "attempt_id": id})
+			return
+		}
+		c.JSON(200, gin.H{"attempt_id": id, "started_at": startedAt})
+		return
+	}
+
+	if err := db.QueryRow(ctx,
+		`INSERT INTO student_exam_attempts (exam_id,student_id) VALUES ($1,$2) RETURNING id, started_at`,
+		examID, userID).Scan(&id, &startedAt); err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(201, gin.H{"attempt_id": id})
+	c.JSON(201, gin.H{"attempt_id": id, "started_at": startedAt})
 }
 
 func submitAttempt(c *gin.Context) {
 	attemptID := c.Param("aid")
+	userID, _ := c.Get("userID")
 	var req struct {
 		Answers []struct {
 			QuestionID string          `json:"question_id"`
@@ -381,6 +399,22 @@ func submitAttempt(c *gin.Context) {
 		return
 	}
 	ctx := context.Background()
+
+	var ownerID, attemptStatus string
+	if err := db.QueryRow(ctx,
+		`SELECT student_id, status FROM student_exam_attempts WHERE id=$1`, attemptID).
+		Scan(&ownerID, &attemptStatus); err != nil {
+		c.JSON(404, gin.H{"error": "attempt not found"})
+		return
+	}
+	if ownerID != userID {
+		c.JSON(403, gin.H{"error": "not your exam attempt"})
+		return
+	}
+	if attemptStatus != "in_progress" {
+		c.JSON(409, gin.H{"error": "This exam has already been submitted."})
+		return
+	}
 
 	var subjectID *string
 	db.QueryRow(ctx, `SELECT e.subject_id FROM exams e
@@ -439,8 +473,19 @@ func submitAttempt(c *gin.Context) {
 	if needsReview {
 		status = "needs_review"
 	}
-	db.Exec(ctx, `UPDATE student_exam_attempts SET status=$1, score=$2, total_points=$3, submitted_at=now() WHERE id=$4`,
+	tag, err := db.Exec(ctx,
+		`UPDATE student_exam_attempts SET status=$1, score=$2, total_points=$3, submitted_at=now()
+		  WHERE id=$4 AND status='in_progress'`,
 		status, total, maxTotal, attemptID)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		// Lost a race with a concurrent submit (e.g. two open tabs).
+		c.JSON(409, gin.H{"error": "This exam has already been submitted."})
+		return
+	}
 	c.JSON(200, gin.H{"status": status, "score": total, "total_points": maxTotal})
 }
 

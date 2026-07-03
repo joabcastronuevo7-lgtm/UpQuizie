@@ -10,6 +10,10 @@ app.use(express.json({ limit: "10mb" }));
 
 const PORT = parseInt(process.env.PORT || "7000", 10);
 const ARRAY_BATCH = parseInt(process.env.GEN_BATCH || "8", 10);
+// How many LLM generations may run at once. Keep this <= the Ollama server's
+// OLLAMA_NUM_PARALLEL so concurrent requests are batched on the GPU rather than
+// queued. Overlapping independent candidates is the main lever on wall time.
+const GEN_CONCURRENCY = Math.max(1, parseInt(process.env.GEN_CONCURRENCY || "4", 10));
 const RETRIEVAL_K = Math.max(1, parseInt(process.env.RAG_TOP_K || "2", 10));
 const QUERY_CACHE_SIZE = Math.max(0, parseInt(process.env.RAG_QUERY_CACHE_SIZE || "100", 10));
 const queryEmbeddingCache = new Map<string, number[]>();
@@ -296,6 +300,20 @@ function deterministicQuestion(item: DistItem, source: GroundingSource, ordinal:
   return null;
 }
 
+/** Bounded-concurrency scheduler: runs at most `max` tasks at once, queues the rest. */
+function createLimiter(max: number) {
+  let active = 0;
+  const queue: Array<() => void> = [];
+  const pump = () => {
+    while (active < max && queue.length) { active++; queue.shift()!(); }
+  };
+  return <T>(fn: () => Promise<T>): Promise<T> =>
+    new Promise<T>((resolve, reject) => {
+      queue.push(() => fn().then(resolve, reject).finally(() => { active--; pump(); }));
+      pump();
+    });
+}
+
 async function runGeneration(
   jobId: string, subjectId: string, documentIds: string[], topic: string, dist: DistItem[]
 ): Promise<void> {
@@ -304,7 +322,9 @@ async function runGeneration(
   const retrievalQuery = [topic, ...dist.map((item) => `${item.difficulty} ${item.type} questions`)]
     .filter(Boolean).join("; ");
   const pool = await retrieveSources(subjectId, documentIds, retrievalQuery);
-  const factCache = new Map<string, string[]>();
+  // Promise-valued so concurrent candidates sharing a source key await one
+  // extraction instead of each firing its own (cache-stampede under concurrency).
+  const factCache = new Map<string, Promise<string[]>>();
 
   const genBatch = async (item: DistItem, want: number, callNumber: number) => {
     // MCQ facts are extracted once and reused. Rotating context on every
@@ -312,9 +332,10 @@ async function runGeneration(
     const sources = contextFor(pool, item.type === "mcq" ? 1 : callNumber);
     if (item.type === "mcq") {
       const sourceKey = sources.map((source) => `${source.document_id}:${source.chunk_index ?? "?"}`).join("|");
-      let facts = factCache.get(sourceKey);
-      if (!facts) {
-        const factOutput = await chat(`You are a fact extractor.
+      let factsPromise = factCache.get(sourceKey);
+      if (!factsPromise) {
+        factsPromise = (async () => {
+          const factOutput = await chat(`You are a fact extractor.
 
 Extract exactly 5 short, important factual statements from the TEXT.
 
@@ -333,13 +354,17 @@ Return only five numbered lines:
 
 TEXT:
 ${renderSources(sources)}`, {
-          temperature: 0.2, topP: 0.85, topK: 30, repeatPenalty: 1.2, numPredict: 180,
-        });
-        facts = factOutput.split(/\r?\n/).map((line) => line.trim())
-          .map((line) => line.replace(/^\s*\d+[.)]\s*/, "").trim())
-          .filter((line) => line.length >= 8 && sourceGroundedFact(line, sources)).slice(0, 5);
-        factCache.set(sourceKey, facts);
+            temperature: 0.2, topP: 0.85, topK: 30, repeatPenalty: 1.2, numPredict: 180,
+          });
+          return factOutput.split(/\r?\n/).map((line) => line.trim())
+            .map((line) => line.replace(/^\s*\d+[.)]\s*/, "").trim())
+            .filter((line) => line.length >= 8 && sourceGroundedFact(line, sources)).slice(0, 5);
+        })();
+        // If extraction fails, don't poison the cache — let the next wave retry.
+        factsPromise.catch(() => factCache.delete(sourceKey));
+        factCache.set(sourceKey, factsPromise);
       }
+      const facts = await factsPromise;
       if (!facts.length) return { questions: [] as any[], sources };
       const fact = facts[(callNumber - 1) % facts.length];
 
@@ -572,25 +597,33 @@ ${renderSources(sources)}`;
     return false;
   };
 
-  for (const item of dist) {
+  // Shared GPU budget across every candidate and every distribution row, so
+  // total in-flight LLM work stays at GEN_CONCURRENCY no matter how many rows.
+  const limit = createLimiter(GEN_CONCURRENCY);
+
+  const processItem = async (item: DistItem) => {
     const target = item.count || 1;
     let produced = 0;
     let call = 0;
-    // One batched LLM call per batch: retrieve -> augment -> generate.
-    // Natural wording is mandatory, so retry rejected model candidates instead
-    // of replacing them with copied-sentence or cloze templates.
-    // Over-generate at roughly a 10:3 ratio, then retain only the first
+    // Each candidate is one fully validated item (small local models produce
+    // more reliable JSON and more varied wording that way). Natural wording is
+    // mandatory, so we retry rejected candidates rather than substituting cloze
+    // templates. Over-generate at roughly a 20:3 ratio, keeping the first
     // `target` candidates that pass every style and grounding validator.
-    // Example: target=3 -> candidate budget=10 -> keep first 3 valid.
     const maxCalls = Math.max(target, Math.ceil(target * 20 / 3));
+    // Issue candidates in concurrent waves instead of strictly one at a time.
+    // Independent candidates overlap on the GPU (bounded by `limit`) and share
+    // the cached source facts, so a wave adds at most one fact-extraction call.
     while (produced < target && call < maxCalls) {
-      call++;
-      // Small local models produce substantially more reliable JSON and more
-      // varied wording when composing one fully validated item at a time.
-      const batch = await genBatch(item, 1, call);
-      for (const question of batch.questions) {
+      const waveSize = Math.min(target - produced, maxCalls - call);
+      const waveCalls = Array.from({ length: waveSize }, () => ++call);
+      const batches = await Promise.all(waveCalls.map((n) => limit(() => genBatch(item, 1, n))));
+      for (const batch of batches) {
+        for (const question of batch.questions) {
+          if (produced >= target) break;
+          if (await tryInsert(item, question, batch.sources)) produced++;
+        }
         if (produced >= target) break;
-        if (await tryInsert(item, question, batch.sources)) produced++;
       }
     }
     if (produced < target) {
@@ -606,7 +639,10 @@ ${renderSources(sources)}`;
       );
     }
     console.log(`item ${item.type}/${item.difficulty}: produced ${produced}/${target} validated questions in ${call} LLM call(s)`);
-  }
+  };
+
+  // Distribution rows are independent; run them concurrently under the shared limiter.
+  await Promise.all(dist.map(processItem));
   await query(`UPDATE generation_jobs SET status='done', finished_at=now() WHERE id=$1`, [jobId]);
   console.log(`generation job ${jobId} completed in ${Date.now() - startedAt}ms (top-k=${RETRIEVAL_K})`);
 }

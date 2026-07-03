@@ -1,6 +1,11 @@
 // Cookie-based auth: the JWT lives in an HTTP-only cookie set by the API,
 // so the browser sends it automatically with credentials: "include".
 
+export interface ApiError extends Error {
+  status?: number;
+  body?: any;
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const isForm = options.body instanceof FormData;
   const headers: Record<string, string> = {
@@ -11,13 +16,17 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const res = await fetch(`/api${path}`, { ...options, headers, credentials: "include" });
   if (!res.ok) {
     let msg = `Request failed (${res.status})`;
+    let body: any = null;
     try {
-      const body = await res.json();
+      body = await res.json();
       if (body.error) msg = body.error;
     } catch {
       /* ignore */
     }
-    throw new Error(msg);
+    const err = new Error(msg) as ApiError;
+    err.status = res.status;
+    err.body = body;
+    throw err;
   }
   if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
@@ -75,6 +84,27 @@ export interface Question {
   source_ref?: string;
   status?: string;
   position?: number;
+}
+export interface MonitorStudent {
+  student_id: string;
+  name: string;
+  identifier: string;
+  attempt_id: string | null;
+  status: "not_started" | "in_progress" | "completed" | "needs_review";
+  answered_count: number;
+  question_count: number;
+  score: number | null;
+  total_points: number | null;
+  started_at: string | null;
+  submitted_at: string | null;
+  last_seen_at: string | null;
+  focused: boolean | null;
+}
+export interface ExamMonitor {
+  exam: { id: string; title: string; status: string; duration_min: number; total_points: number; question_count: number };
+  summary: { enrolled: number; not_started: number; in_progress: number; submitted: number };
+  students: MonitorStudent[];
+  now: string;
 }
 export interface DocumentMeta {
   id: string;

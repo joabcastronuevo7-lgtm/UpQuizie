@@ -101,7 +101,11 @@ func main() {
 		// Attempts & scoring
 		auth.POST("/exams/:id/attempts", startAttempt)
 		auth.POST("/attempts/:aid/submit", submitAttempt)
+		auth.POST("/attempts/:aid/heartbeat", heartbeat)
 		auth.GET("/attempts/:aid", getAttempt)
+
+		// Live exam-session monitoring (educator)
+		auth.GET("/exams/:id/monitor", requireRole("educator", "admin"), examMonitor)
 
 		// Student self-service
 		auth.GET("/me/performance", studentPerformance)
