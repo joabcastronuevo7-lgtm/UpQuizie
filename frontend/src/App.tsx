@@ -31,6 +31,7 @@ function Home() {
   if (loading) return <div className="p-10 text-on-surface-variant">Loading…</div>;
   if (!user) return <Navigate to="/login" replace />;
   if (user.role === "admin") return <Navigate to="/admin/users" replace />;
+  if (user.role === "student") return <Navigate to="/student" replace />;
   return <Navigate to="/subjects" replace />;
 }
 

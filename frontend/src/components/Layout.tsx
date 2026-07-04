@@ -19,9 +19,8 @@ const navByRole: Record<string, NavItem[]> = {
   educator: [
     { label: "Subjects", icon: "book", to: "/subjects" },
     { label: "Learning Materials", icon: "folder_open", to: "/materials" },
-    { label: "Generate & Review", icon: "auto_awesome", to: "/educator" },
-    { label: "Exams", icon: "assignment", to: "/exams" },
     { label: "Exam Sessions", icon: "live_tv", to: "/sessions" },
+    { label: "Grade Submissions", icon: "fact_check", to: "/score-review" },
     { label: "Analytics", icon: "analytics", to: "/analytics" },
   ],
   admin: [
