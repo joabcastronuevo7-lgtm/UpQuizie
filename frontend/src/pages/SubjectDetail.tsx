@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Layout, { Icon } from "../components/Layout";
 import { api, Exam, Question, Subject } from "../api";
 import { useAuth } from "../auth";
+import ScoreReview from "./ScoreReview";
 
 export default function SubjectDetail() {
   const { id = "" } = useParams();
@@ -11,6 +12,7 @@ export default function SubjectDetail() {
   const nav = useNavigate();
   const qc = useQueryClient();
   const [previewId, setPreviewId] = useState("");
+  const [tab, setTab] = useState<"quizzes" | "grading">("quizzes");
 
   const { data: subjects = [] } = useQuery({
     queryKey: ["subjects"],
@@ -70,13 +72,22 @@ export default function SubjectDetail() {
       </section>
 
       <div className="flex items-center gap-1 border-b border-outline-variant mb-7">
-        <span className="px-5 py-3 border-b-2 border-secondary text-secondary font-semibold flex items-center gap-2">
+        <button onClick={() => setTab("quizzes")}
+          className={`px-5 py-3 font-semibold flex items-center gap-2 ${tab === "quizzes" ? "border-b-2 border-secondary text-secondary" : "text-on-surface-variant hover:text-secondary"}`}>
           <Icon name="quiz" className="text-[20px]" /> {canManage ? "Subject Quizzes" : "Published Quizzes"}
-        </span>
-        <Link to={`/subjects/${id}/materials`}
-          className="px-5 py-3 text-on-surface-variant font-semibold flex items-center gap-2 hover:text-secondary">
-          <Icon name="folder_open" className="text-[20px]" /> Materials
-        </Link>
+        </button>
+        {canManage && (
+          <button onClick={() => setTab("grading")}
+            className={`px-5 py-3 font-semibold flex items-center gap-2 ${tab === "grading" ? "border-b-2 border-secondary text-secondary" : "text-on-surface-variant hover:text-secondary"}`}>
+            <Icon name="fact_check" className="text-[20px]" /> Grade Submissions
+          </button>
+        )}
+        {canManage && (
+          <Link to={`/subjects/${id}/materials`}
+            className="px-5 py-3 text-on-surface-variant font-semibold flex items-center gap-2 hover:text-secondary">
+            <Icon name="folder_open" className="text-[20px]" /> Materials
+          </Link>
+        )}
         {canManage && (
           <Link to="/educator" className="ml-auto px-4 py-2 text-sm text-secondary font-semibold flex items-center gap-1 hover:underline">
             <Icon name="auto_awesome" className="text-[18px]" /> Generate & review
@@ -84,7 +95,9 @@ export default function SubjectDetail() {
         )}
       </div>
 
-      {isLoading ? (
+      {tab === "grading" && canManage ? (
+        <ScoreReview embedded subjectId={id} />
+      ) : isLoading ? (
         <p className="text-on-surface-variant">Loading quizzes...</p>
       ) : visibleExams.length === 0 ? (
         <div className="border border-dashed border-outline-variant bg-surface-container-lowest rounded-2xl p-12 text-center">

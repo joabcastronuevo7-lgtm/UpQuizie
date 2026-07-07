@@ -52,6 +52,8 @@ export interface User {
   email: string;
   full_name: string;
   role: "student" | "educator" | "admin";
+  identifier?: string | null;
+  avatar_url?: string | null;
 }
 export interface Subject {
   id: string;

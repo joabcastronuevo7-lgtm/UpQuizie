@@ -44,16 +44,21 @@ func gradeAnswerWithAI(modelAnswer, studentAnswer string, maxPoints int) (int, f
 }
 
 func listGradingSubmissions(c *gin.Context) {
-	rows, err := db.Query(context.Background(),
-		`SELECT a.id, e.id, e.title, e.exam_mode, COALESCE(s.name,''),
-		        u.full_name, COALESCE(u.identifier,''), a.status, a.score,
-		        a.total_points, a.submitted_at
-		 FROM student_exam_attempts a
-		 JOIN exams e ON e.id=a.exam_id
-		 JOIN users u ON u.id=a.student_id
-		 LEFT JOIN subjects s ON s.id=e.subject_id
-		 WHERE a.status <> 'in_progress'
-		 ORDER BY a.submitted_at DESC NULLS LAST`)
+	query := `SELECT a.id, e.id, e.title, e.exam_mode, COALESCE(s.name,''),
+	        u.full_name, COALESCE(u.identifier,''), a.status, a.score,
+	        a.total_points, a.submitted_at
+	 FROM student_exam_attempts a
+	 JOIN exams e ON e.id=a.exam_id
+	 JOIN users u ON u.id=a.student_id
+	 LEFT JOIN subjects s ON s.id=e.subject_id
+	 WHERE a.status <> 'in_progress'`
+	args := []interface{}{}
+	if sid := c.Query("subject_id"); sid != "" {
+		query += ` AND e.subject_id=$1`
+		args = append(args, sid)
+	}
+	query += ` ORDER BY a.submitted_at DESC NULLS LAST`
+	rows, err := db.Query(context.Background(), query, args...)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return

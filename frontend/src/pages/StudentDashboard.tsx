@@ -27,7 +27,7 @@ export default function StudentDashboard() {
     </header>
 
     <section>
-      <div className="mb-4"><h2 className="font-headline text-2xl text-primary mb-1">My Subjects</h2><p className="text-sm text-on-surface-variant">Open a subject to view its published quizzes and learning materials.</p></div>
+      <div className="mb-4"><h2 className="font-headline text-2xl text-primary mb-1">My Subjects</h2><p className="text-sm text-on-surface-variant">Open a subject to view its published quizzes.</p></div>
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
         {subjects.map((subject, index) => <button key={subject.id} onClick={() => nav(`/subjects/${subject.id}`)} className="bg-surface-container-lowest border border-outline-variant rounded-xl overflow-hidden text-left transition-all hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-secondary">
           <div className={`h-20 ${subjectColors[index % subjectColors.length]} relative`}>

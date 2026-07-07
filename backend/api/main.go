@@ -64,10 +64,15 @@ func main() {
 	api.POST("/auth/login", handleLogin)
 	api.POST("/auth/logout", handleLogout)
 
+	api.GET("/avatars/:name", serveAvatar)
+
 	auth := api.Group("")
 	auth.Use(authMiddleware())
 	{
 		auth.GET("/me", handleMe)
+		auth.PATCH("/me", updateMe)
+		auth.POST("/me/avatar", uploadAvatar)
+		auth.POST("/me/password", changePassword)
 
 		// Subjects & enrollment
 		auth.GET("/subjects", listSubjects)
@@ -122,6 +127,7 @@ func main() {
 
 		// Admin
 		auth.GET("/admin/users", requireRole("admin"), listUsers)
+		auth.POST("/admin/users", requireRole("admin"), createUserAdmin)
 		auth.PATCH("/admin/users/:uid", requireRole("admin"), updateUser)
 	}
 

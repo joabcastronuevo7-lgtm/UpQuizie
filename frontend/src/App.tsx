@@ -8,7 +8,6 @@ import Materials from "./pages/Materials";
 import Subjects from "./pages/Subjects";
 import ExamsList from "./pages/ExamsList";
 import ExamSessions from "./pages/ExamSessions";
-import ScoreReview from "./pages/ScoreReview";
 import Enrollment from "./pages/Enrollment";
 import TakeExam from "./pages/TakeExam";
 import Results from "./pages/Results";
@@ -53,7 +52,6 @@ export default function App() {
       <Route path="/calendar" element={<Protected><StudentCalendar /></Protected>} />
       <Route path="/settings" element={<Protected><Settings /></Protected>} />
       <Route path="/sessions" element={<Protected><ExamSessions /></Protected>} />
-      <Route path="/score-review" element={<Protected><ScoreReview /></Protected>} />
       <Route path="/subjects" element={<Protected><Subjects /></Protected>} />
       <Route path="/subjects/:id" element={<Protected><SubjectDetail /></Protected>} />
       <Route path="/exams" element={<Protected><ExamsList /></Protected>} />

@@ -13,13 +13,11 @@ const navByRole: Record<string, NavItem[]> = {
     { label: "Dashboard", icon: "dashboard", to: "/student" },
     { label: "Calendar", icon: "calendar_month", to: "/calendar" },
     { label: "Performance", icon: "monitoring", to: "/performance" },
-    { label: "Settings", icon: "settings", to: "/settings" },
   ],
   educator: [
     { label: "Subjects", icon: "book", to: "/subjects" },
     { label: "Learning Materials", icon: "folder_open", to: "/materials" },
     { label: "Exam Sessions", icon: "live_tv", to: "/sessions" },
-    { label: "Grade Submissions", icon: "fact_check", to: "/score-review" },
     { label: "Analytics", icon: "analytics", to: "/analytics" },
   ],
   admin: [
@@ -67,7 +65,18 @@ export default function Layout({ children, title }: { children: ReactNode; title
             );
           })}
         </nav>
-        <div className="p-4 border-t border-outline-variant">
+        <div className="p-4 border-t border-outline-variant space-y-1">
+          <Link
+            to="/settings"
+            className={`flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-semibold transition-all ${
+              loc.pathname === "/settings"
+                ? "bg-secondary-container text-on-secondary-container"
+                : "text-on-surface-variant hover:bg-surface-container-high"
+            }`}
+          >
+            <Icon name="settings" />
+            Settings
+          </Link>
           <button
             onClick={() => { logout(); nav("/login"); }}
             className="flex items-center gap-3 px-4 py-3 w-full rounded-lg text-on-surface-variant hover:bg-surface-container-high text-sm font-semibold"
@@ -84,8 +93,10 @@ export default function Layout({ children, title }: { children: ReactNode; title
           <h2 className="font-headline text-xl font-bold text-primary">{title}</h2>
           <div className="flex items-center gap-3">
             <span className="text-sm text-on-surface-variant hidden sm:block">{user?.full_name}</span>
-            <div className="w-9 h-9 rounded-full bg-primary-container text-on-primary flex items-center justify-center font-bold text-sm">
-              {user?.full_name?.[0] || "U"}
+            <div className="w-9 h-9 rounded-full bg-primary-container text-on-primary flex items-center justify-center font-bold text-sm overflow-hidden">
+              {user?.avatar_url
+                ? <img src={user.avatar_url} alt="Profile" className="w-full h-full object-cover" />
+                : (user?.full_name?.[0] || "U")}
             </div>
           </div>
         </header>

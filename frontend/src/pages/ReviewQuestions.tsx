@@ -162,6 +162,7 @@ export default function ReviewQuestions({ embedded = false, subjectId: controlle
         navigate(`/exams/${r.id}/monitor`);
       }
     },
+    onError: (error: Error) => setMsg(`Exam creation failed: ${error.message}`),
   });
 
   const chosen = Object.keys(selected).filter((k) => selected[k]);

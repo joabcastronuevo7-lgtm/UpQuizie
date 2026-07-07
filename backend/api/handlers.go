@@ -704,7 +704,7 @@ func subjectAnalytics(c *gin.Context) {
 
 func listUsers(c *gin.Context) {
 	rows, err := db.Query(context.Background(),
-		`SELECT id, email, full_name, role, status, created_at FROM users ORDER BY created_at DESC`)
+		`SELECT id, email, full_name, role, identifier, status, created_at FROM users ORDER BY created_at DESC`)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -713,28 +713,59 @@ func listUsers(c *gin.Context) {
 	out := []gin.H{}
 	for rows.Next() {
 		var id, email, name, role, status string
+		var identifier *string
 		var created time.Time
-		rows.Scan(&id, &email, &name, &role, &status, &created)
+		rows.Scan(&id, &email, &name, &role, &identifier, &status, &created)
 		out = append(out, gin.H{"id": id, "email": email, "full_name": name,
-			"role": role, "status": status, "created_at": created})
+			"role": role, "identifier": identifier, "status": status, "created_at": created})
 	}
 	c.JSON(200, out)
 }
 
 func updateUser(c *gin.Context) {
 	var req struct {
-		Role   *string `json:"role"`
-		Status *string `json:"status"`
+		FullName   *string `json:"full_name"`
+		Email      *string `json:"email"`
+		Identifier *string `json:"identifier"`
+		Role       *string `json:"role"`
+		Status     *string `json:"status"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
-	_, err := db.Exec(context.Background(),
-		`UPDATE users SET role=COALESCE($2,role), status=COALESCE($3,status) WHERE id=$1`,
-		c.Param("uid"), req.Role, req.Status)
+	if req.Role != nil && *req.Role != "student" && *req.Role != "educator" && *req.Role != "admin" {
+		c.JSON(400, gin.H{"error": "role must be student, educator, or admin"})
+		return
+	}
+	if req.Status != nil && *req.Status != "active" && *req.Status != "inactive" && *req.Status != "pending" {
+		c.JSON(400, gin.H{"error": "status must be active, inactive, or pending"})
+		return
+	}
+	if req.FullName != nil && strings.TrimSpace(*req.FullName) == "" {
+		c.JSON(400, gin.H{"error": "full_name cannot be empty"})
+		return
+	}
+	if req.Email != nil && strings.TrimSpace(*req.Email) == "" {
+		c.JSON(400, gin.H{"error": "email cannot be empty"})
+		return
+	}
+	tag, err := db.Exec(context.Background(),
+		`UPDATE users SET full_name=COALESCE($2,full_name), email=COALESCE($3,email),
+		 identifier=NULLIF(COALESCE($4,identifier),''),
+		 role=COALESCE($5::user_role,role), status=COALESCE($6::user_status,status)
+		 WHERE id=$1`,
+		c.Param("uid"), req.FullName, req.Email, req.Identifier, req.Role, req.Status)
 	if err != nil {
+		if strings.Contains(err.Error(), "users_email_key") {
+			c.JSON(409, gin.H{"error": "That email is already in use by another account."})
+			return
+		}
 		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		c.JSON(404, gin.H{"error": "user not found"})
 		return
 	}
 	c.JSON(200, gin.H{"ok": true})

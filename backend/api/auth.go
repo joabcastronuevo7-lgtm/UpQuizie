@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -73,6 +76,50 @@ func handleRegister(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{
 		"user": gin.H{"id": id, "email": req.Email, "full_name": req.FullName, "role": role},
 	})
+}
+
+// createUserAdmin provisions an account on behalf of an admin. Unlike
+// handleRegister it must not touch the session cookie, or the admin would be
+// logged in as the user they just created.
+func createUserAdmin(c *gin.Context) {
+	var req struct {
+		Email      string `json:"email" binding:"required,email"`
+		Password   string `json:"password" binding:"required,min=6"`
+		FullName   string `json:"full_name" binding:"required"`
+		Role       string `json:"role"`
+		Identifier string `json:"identifier"`
+		Status     string `json:"status"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	role := req.Role
+	if role != "student" && role != "educator" && role != "admin" {
+		role = "student"
+	}
+	status := req.Status
+	if status != "active" && status != "inactive" && status != "pending" {
+		status = "active"
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "hash failed"})
+		return
+	}
+	var id string
+	var created time.Time
+	err = db.QueryRow(context.Background(),
+		`INSERT INTO users (email, password_hash, full_name, role, identifier, status)
+		 VALUES ($1,$2,$3,$4,NULLIF($5,''),$6) RETURNING id, created_at`,
+		strings.ToLower(req.Email), string(hash), req.FullName, role, req.Identifier, status).Scan(&id, &created)
+	if err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "email already registered"})
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"id": id, "email": strings.ToLower(req.Email),
+		"full_name": req.FullName, "role": role, "identifier": req.Identifier,
+		"status": status, "created_at": created})
 }
 
 func handleLogin(c *gin.Context) {
@@ -153,16 +200,159 @@ func requireRole(roles ...string) gin.HandlerFunc {
 
 func handleMe(c *gin.Context) {
 	userID, _ := c.Get("userID")
-	var email, fullName, role string
-	var identifier *string
-	err := db.QueryRow(context.Background(),
-		`SELECT email, full_name, role, identifier FROM users WHERE id=$1`, userID).
-		Scan(&email, &fullName, &role, &identifier)
+	user, err := loadUser(userID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"id": userID, "email": email, "full_name": fullName, "role": role, "identifier": identifier,
-	})
+	c.JSON(http.StatusOK, user)
+}
+
+func loadUser(userID any) (gin.H, error) {
+	var email, fullName, role string
+	var identifier, avatarURL *string
+	err := db.QueryRow(context.Background(),
+		`SELECT email, full_name, role, identifier, avatar_url FROM users WHERE id=$1`, userID).
+		Scan(&email, &fullName, &role, &identifier, &avatarURL)
+	if err != nil {
+		return nil, err
+	}
+	return gin.H{
+		"id": userID, "email": email, "full_name": fullName, "role": role,
+		"identifier": identifier, "avatar_url": avatarURL,
+	}, nil
+}
+
+// updateMe lets a user edit their own name, email, and ID number (never role
+// or status).
+func updateMe(c *gin.Context) {
+	userID, _ := c.Get("userID")
+	var req struct {
+		FullName   *string `json:"full_name"`
+		Email      *string `json:"email"`
+		Identifier *string `json:"identifier"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.FullName != nil && strings.TrimSpace(*req.FullName) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "full_name cannot be empty"})
+		return
+	}
+	if req.Email != nil {
+		trimmed := strings.ToLower(strings.TrimSpace(*req.Email))
+		if trimmed == "" || !strings.Contains(trimmed, "@") {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "a valid email is required"})
+			return
+		}
+		req.Email = &trimmed
+	}
+	_, err := db.Exec(context.Background(),
+		`UPDATE users SET full_name=COALESCE($2,full_name), email=COALESCE($3,email),
+		 identifier=NULLIF(COALESCE($4,identifier),'') WHERE id=$1`,
+		userID, req.FullName, req.Email, req.Identifier)
+	if err != nil {
+		if strings.Contains(err.Error(), "users_email_key") {
+			c.JSON(http.StatusConflict, gin.H{"error": "That email is already in use by another account."})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	user, err := loadUser(userID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+		return
+	}
+	c.JSON(http.StatusOK, user)
+}
+
+// changePassword verifies the current password before setting a new one.
+func changePassword(c *gin.Context) {
+	userID, _ := c.Get("userID")
+	var req struct {
+		CurrentPassword string `json:"current_password" binding:"required"`
+		NewPassword     string `json:"new_password" binding:"required,min=6"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "New password must be at least 6 characters."})
+		return
+	}
+	var hash string
+	if err := db.QueryRow(context.Background(),
+		`SELECT password_hash FROM users WHERE id=$1`, userID).Scan(&hash); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+		return
+	}
+	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.CurrentPassword)) != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Current password is incorrect."})
+		return
+	}
+	newHash, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "hash failed"})
+		return
+	}
+	if _, err := db.Exec(context.Background(),
+		`UPDATE users SET password_hash=$2 WHERE id=$1`, userID, string(newHash)); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// uploadAvatar stores a profile picture in the uploads volume and points
+// users.avatar_url at it. A timestamped filename keeps browser caches fresh;
+// older avatars for the same user are cleaned up after the new one is saved.
+func uploadAvatar(c *gin.Context) {
+	userID, _ := c.Get("userID")
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file is required (multipart field 'file')"})
+		return
+	}
+	if fileHeader.Size > 5<<20 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "image must be 5 MB or smaller"})
+		return
+	}
+	ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
+	allowed := map[string]bool{".jpg": true, ".jpeg": true, ".png": true, ".webp": true, ".gif": true}
+	if !allowed[ext] {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "image must be jpg, png, webp, or gif"})
+		return
+	}
+	dir := filepath.Join(uploadDir, "avatars")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	old, _ := filepath.Glob(filepath.Join(dir, fmt.Sprintf("%v-*", userID)))
+	name := fmt.Sprintf("%v-%d%s", userID, time.Now().UnixNano(), ext)
+	if err := c.SaveUploadedFile(fileHeader, filepath.Join(dir, name)); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not save file: " + err.Error()})
+		return
+	}
+	url := "/api/avatars/" + name
+	if _, err := db.Exec(context.Background(),
+		`UPDATE users SET avatar_url=$2 WHERE id=$1`, userID, url); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	for _, f := range old {
+		os.Remove(f)
+	}
+	c.JSON(http.StatusOK, gin.H{"avatar_url": url})
+}
+
+// serveAvatar returns a stored profile picture. filepath.Base guards against
+// path traversal in the name parameter.
+func serveAvatar(c *gin.Context) {
+	name := filepath.Base(c.Param("name"))
+	path := filepath.Join(uploadDir, "avatars", name)
+	if _, err := os.Stat(path); err != nil {
+		c.Status(http.StatusNotFound)
+		return
+	}
+	c.File(path)
 }

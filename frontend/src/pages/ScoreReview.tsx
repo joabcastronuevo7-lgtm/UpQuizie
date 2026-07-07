@@ -26,11 +26,71 @@ function text(value: any): string {
   return JSON.stringify(value);
 }
 
-export default function ScoreReview() {
+// Resolve a choice index to its option text, e.g. "A. Alan Turing".
+function optionText(options: any, index: any): string {
+  const i = Number(index);
+  if (!Number.isInteger(i) || i < 0) return "No answer";
+  if (Array.isArray(options) && options[i] != null) {
+    return `${String.fromCharCode(65 + i)}. ${String(options[i])}`;
+  }
+  return `Choice ${i + 1}`;
+}
+
+function matchingPairs(options: any, pairs: any): string | null {
+  const left = options?.left, right = options?.right;
+  if (!Array.isArray(pairs) || !Array.isArray(left) || !Array.isArray(right)) return null;
+  return pairs
+    .map((p: any) => `${left[p?.[0]] ?? `#${p?.[0]}`} → ${right[p?.[1]] ?? `#${p?.[1]}`}`)
+    .join("\n");
+}
+
+function formatExpected(answer: ReviewAnswer): string {
+  const e = answer.expected_answer;
+  if (e == null) return "—";
+  switch (answer.type) {
+    case "mcq":
+      return optionText(answer.options, e.correct_index ?? 0);
+    case "true_false":
+      return e.correct ? "True" : "False";
+    case "fill_blank":
+      return Array.isArray(e.accepted) && e.accepted.length > 0 ? e.accepted.join("  ·  ") : text(e);
+    case "matching":
+      return matchingPairs(answer.options, e.pairs) ?? text(e);
+    case "essay":
+      return e.rubric ? String(e.rubric) : "Graded against the rubric / AI similarity.";
+    default:
+      return text(e);
+  }
+}
+
+function formatResponse(answer: ReviewAnswer): string {
+  const r = answer.response;
+  if (r == null || (typeof r === "object" && Object.keys(r).length === 0)) return "No answer";
+  switch (answer.type) {
+    case "mcq":
+      return r.index != null ? optionText(answer.options, r.index) : "No answer";
+    case "true_false":
+      return r.value != null ? (r.value ? "True" : "False") : "No answer";
+    case "fill_blank":
+    case "essay":
+      return typeof r.text === "string" && r.text.trim() !== "" ? r.text : "No answer";
+    case "matching":
+      return matchingPairs(answer.options, r.pairs) ?? text(r);
+    default:
+      return text(r);
+  }
+}
+
+interface ScoreReviewProps { embedded?: boolean; subjectId?: string }
+
+export default function ScoreReview({ embedded = false, subjectId }: ScoreReviewProps = {}) {
   const qc = useQueryClient();
   const [selectedId, setSelectedId] = useState("");
   const [mode, setMode] = useState<"take_home" | "all">("take_home");
-  const { data: submissions = [], isLoading } = useQuery({ queryKey: ["grading-submissions"], queryFn: () => api.get<Submission[]>("/grading/submissions") });
+  const { data: submissions = [], isLoading } = useQuery({
+    queryKey: ["grading-submissions", subjectId ?? "all"],
+    queryFn: () => api.get<Submission[]>(`/grading/submissions${subjectId ? `?subject_id=${subjectId}` : ""}`),
+  });
   const visible = submissions.filter((submission) => mode === "all" || submission.exam_mode === "take_home");
   useEffect(() => { if (!selectedId && visible[0]) setSelectedId(visible[0].attempt_id); }, [selectedId, visible]);
   const { data: review, isLoading: loadingReview } = useQuery({
@@ -45,7 +105,7 @@ export default function ScoreReview() {
     },
   });
 
-  return <Layout title="Grade Submissions">
+  const content = <>
     <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-6">
       <div><h2 className="font-headline text-2xl font-bold text-primary">Student answers and score review</h2><p className="text-on-surface-variant text-sm mt-1">Inspect automatic and AI-assisted scores, then correct points when needed.</p></div>
       <select value={mode} onChange={(event) => { setMode(event.target.value as "take_home" | "all"); setSelectedId(""); }} className="border border-outline-variant rounded-lg px-3 py-2 bg-white">
@@ -81,7 +141,8 @@ export default function ScoreReview() {
         </>}
       </main>
     </div>
-  </Layout>;
+  </>;
+  return embedded ? content : <Layout title="Grade Submissions">{content}</Layout>;
 }
 
 function AnswerCard({ answer, saving, onSave }: { answer: ReviewAnswer; saving: boolean; onSave: (points: number, feedback: string) => void }) {
@@ -92,8 +153,8 @@ function AnswerCard({ answer, saving, onSave }: { answer: ReviewAnswer; saving: 
     <div className="p-6">
       <div className="flex items-start justify-between gap-4 mb-4"><div><span className="text-xs uppercase tracking-wider text-secondary font-bold">Question {answer.position} · {typeName[answer.type] || answer.type}</span><h4 className="font-semibold text-on-surface mt-2 leading-6">{answer.prompt}</h4></div><span className="text-sm text-on-surface-variant whitespace-nowrap">{answer.points} pts</span></div>
       <div className="grid md:grid-cols-2 gap-3 mb-4">
-        <div className="bg-surface-container-low rounded-lg p-4"><p className="text-[11px] uppercase font-bold tracking-wider text-on-surface-variant mb-2">Student answer</p><p className="text-sm font-semibold text-on-surface break-words">{text(answer.response)}</p></div>
-        <div className="bg-green-50 border border-green-100 rounded-lg p-4"><p className="text-[11px] uppercase font-bold tracking-wider text-green-700 mb-2">Expected answer / rubric</p><p className="text-sm text-green-900 break-words">{text(answer.expected_answer)}</p></div>
+        <div className="bg-surface-container-low rounded-lg p-4"><p className="text-[11px] uppercase font-bold tracking-wider text-on-surface-variant mb-2">Student answer</p><p className="text-sm font-semibold text-on-surface break-words whitespace-pre-line">{formatResponse(answer)}</p></div>
+        <div className="bg-green-50 border border-green-100 rounded-lg p-4"><p className="text-[11px] uppercase font-bold tracking-wider text-green-700 mb-2">Expected answer / rubric</p><p className="text-sm text-green-900 break-words whitespace-pre-line">{formatExpected(answer)}</p></div>
       </div>
       <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 flex gap-3"><Icon name="auto_awesome" className="text-secondary shrink-0" /><div><p className="text-xs uppercase tracking-wider font-bold text-secondary">Automatic / AI grading explanation</p><p className="text-sm text-blue-900 mt-1">{answer.feedback || "No automated explanation was recorded. Teacher review is required."}</p></div></div>
     </div>

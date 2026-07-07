@@ -12,6 +12,7 @@ CREATE TABLE users (
     full_name     TEXT NOT NULL,
     role          user_role NOT NULL DEFAULT 'student',
     identifier    TEXT,                        -- student ID or employee number
+    avatar_url    TEXT,                        -- profile picture served from /api/avatars
     status        user_status NOT NULL DEFAULT 'active',
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
