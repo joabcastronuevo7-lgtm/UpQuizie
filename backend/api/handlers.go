@@ -652,8 +652,41 @@ func autoGrade(qtype string, answerJSON, responseJSON []byte) (bool, bool) {
 			}
 		}
 		return false, true
+	case "matching":
+		var ans struct {
+			Pairs [][]int `json:"pairs"`
+		}
+		var resp struct {
+			Pairs [][]int `json:"pairs"`
+		}
+		json.Unmarshal(answerJSON, &ans)
+		json.Unmarshal(responseJSON, &resp)
+		if len(ans.Pairs) == 0 {
+			// Malformed stored answer; leave it for manual/AI review.
+			return false, false
+		}
+		want := map[int]int{}
+		for _, pair := range ans.Pairs {
+			if len(pair) == 2 {
+				want[pair[0]] = pair[1]
+			}
+		}
+		if len(resp.Pairs) != len(want) {
+			return false, true
+		}
+		seenLeft := map[int]bool{}
+		for _, pair := range resp.Pairs {
+			if len(pair) != 2 || seenLeft[pair[0]] {
+				return false, true
+			}
+			seenLeft[pair[0]] = true
+			if expected, ok := want[pair[0]]; !ok || expected != pair[1] {
+				return false, true
+			}
+		}
+		return true, true
 	default:
-		// essay / matching -> manual or AI-assisted review
+		// essay -> manual or AI-assisted review
 		return false, false
 	}
 }

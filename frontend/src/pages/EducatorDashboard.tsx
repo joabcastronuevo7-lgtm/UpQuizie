@@ -8,6 +8,17 @@ interface DistRow { type: string; difficulty: string; count: number; points: num
 interface JobStatus { status: "running" | "done" | "error"; requested: number; generated: number; error?: string | null }
 interface GenerationOptions { documents: { id: string; filename: string }[]; topics: string[] }
 
+// Observed generation speed on the reference GPU: ~10s per validated question.
+// Used for the initial estimate until the running job reveals its actual rate.
+const EST_MS_PER_QUESTION = 10_000;
+
+function fmtDuration(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return m > 0 ? `${m}m ${String(s).padStart(2, "0")}s` : `${s}s`;
+}
+
 const QUESTION_TYPES = ["mcq", "true_false", "fill_blank", "essay", "matching"];
 const TYPE_LABELS: Record<string, string> = {
   mcq: "Multiple Choice",
@@ -26,6 +37,9 @@ export default function EducatorDashboard() {
   const [topics, setTopics] = useState<string[]>([]);
   const [dist, setDist] = useState<DistRow[]>([{ type: "mcq", difficulty: "medium", count: 3, points: 5 }]);
   const [jobId, setJobId] = useState<string | null>(null);
+  const [jobStartedAt, setJobStartedAt] = useState<number | null>(null);
+  const [jobEndedAt, setJobEndedAt] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
   const [msg, setMsg] = useState("");
 
   const sid = subjectId || subjects[0]?.id || "";
@@ -60,7 +74,7 @@ export default function EducatorDashboard() {
     mutationFn: () => api.post<{ job_id: string }>(`/subjects/${sid}/generate`, {
       topic: topics.join("; "), document_ids: selectedDocumentIds, distribution: dist,
     }),
-    onSuccess: (r) => { setJobId(r.job_id); setMsg(""); },
+    onSuccess: (r) => { setJobId(r.job_id); setJobStartedAt(Date.now()); setJobEndedAt(null); setMsg(""); },
     onError: (e: any) => setMsg(`Error: ${e.message}`),
   });
 
@@ -70,9 +84,33 @@ export default function EducatorDashboard() {
 
   useEffect(() => {
     if (job?.status === "done" || job?.status === "error") {
+      setJobEndedAt((t) => t ?? Date.now());
       qc.invalidateQueries({ queryKey: ["generated", sid] });
     }
   }, [job?.status, qc, sid]);
+
+  // One-second tick that drives the elapsed / remaining timers while a job runs.
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [running]);
+
+  const elapsedMs = jobStartedAt ? (jobEndedAt ?? now) - jobStartedAt : 0;
+  // Until enough questions have landed to reveal the real rate, estimate from
+  // the reference speed; afterwards project from this job's own throughput.
+  const estTotalMs = job && job.requested > 0
+    ? (job.generated >= 2 && elapsedMs > 0
+      ? (elapsedMs / job.generated) * job.requested
+      : job.requested * EST_MS_PER_QUESTION)
+    : 0;
+  const remainingMs = Math.max(0, estTotalMs - elapsedMs);
+  const progressPct = job && job.requested > 0
+    ? Math.min(99, Math.round(Math.max(
+        (job.generated / job.requested) * 100,
+        estTotalMs > 0 ? Math.min(95, (elapsedMs / estTotalMs) * 100) : 0,
+      )))
+    : 0;
 
   return (
     <Layout title="Generate & Review Questions">
@@ -154,19 +192,45 @@ export default function EducatorDashboard() {
                 </button>
               </div>
 
-              <div className="pt-4 border-t border-outline-variant flex items-center justify-between">
+              <div className="pt-4 border-t border-outline-variant flex items-center justify-between gap-4">
                 <a href="#review-questions" className="text-secondary text-sm font-semibold hover:underline">Go to Review Questions →</a>
-                <button onClick={() => { setMsg(""); start.mutate(); }} disabled={running || !sid || selectedDocumentIds.length === 0}
-                  className="px-8 py-3 bg-secondary text-on-secondary rounded-lg font-semibold flex items-center gap-2 disabled:opacity-60">
-                  <Icon name={running ? "sync" : "generating_tokens"} className={running ? "animate-spin" : ""} />
-                  {running ? "Generating…" : "Generate Questions"}
-                </button>
+                <div className="flex items-center gap-3">
+                  {!running && total > 0 && (
+                    <span className="text-sm text-on-surface-variant whitespace-nowrap flex items-center gap-1">
+                      <Icon name="timer" className="text-[16px]" /> est. ~{fmtDuration(total * EST_MS_PER_QUESTION)}
+                    </span>
+                  )}
+                  <button onClick={() => { setMsg(""); start.mutate(); }} disabled={running || !sid || selectedDocumentIds.length === 0}
+                    className="px-8 py-3 bg-secondary text-on-secondary rounded-lg font-semibold flex items-center gap-2 disabled:opacity-60">
+                    <Icon name={running ? "sync" : "generating_tokens"} className={running ? "animate-spin" : ""} />
+                    {running ? "Generating…" : "Generate Questions"}
+                  </button>
+                </div>
               </div>
 
               {job && (
-                <div className="rounded-lg border border-outline-variant p-4 bg-surface-container-low text-sm">
-                  {job.status === "running" && <p className="flex items-center gap-2"><Icon name="sync" className="animate-spin text-secondary" /> Generating {job.generated} of {job.requested}…</p>}
-                  {job.status === "done" && <p className="text-secondary flex items-center gap-2"><Icon name="check_circle" /> Done — {job.generated} validated question{job.generated === 1 ? "" : "s"} kept. <a href="#review-questions" className="font-semibold underline">Review →</a></p>}
+                <div className="rounded-lg border border-outline-variant p-4 bg-surface-container-low text-sm space-y-3">
+                  {job.status === "running" && (
+                    <>
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="flex items-center gap-2">
+                          <Icon name="sync" className="animate-spin text-secondary" />
+                          Generating {job.generated} of {job.requested} question{job.requested === 1 ? "" : "s"}…
+                        </p>
+                        <p className="flex items-center gap-3 text-on-surface-variant">
+                          <span className="flex items-center gap-1"><Icon name="timer" className="text-[16px]" /> {fmtDuration(elapsedMs)} elapsed</span>
+                          <span className="font-semibold text-secondary">~{fmtDuration(remainingMs)} remaining</span>
+                        </p>
+                      </div>
+                      <div className="h-2 rounded-full bg-surface-container-high overflow-hidden">
+                        <div className="h-full bg-secondary rounded-full transition-all duration-1000" style={{ width: `${progressPct}%` }} />
+                      </div>
+                      <p className="text-xs text-on-surface-variant">
+                        Estimated from this job's speed (~10s per question on GPU). The AI validates every question against your document, so the pace can vary.
+                      </p>
+                    </>
+                  )}
+                  {job.status === "done" && <p className="text-secondary flex items-center gap-2"><Icon name="check_circle" /> Done — {job.generated} validated question{job.generated === 1 ? "" : "s"} kept in {fmtDuration(elapsedMs)}. <a href="#review-questions" className="font-semibold underline">Review →</a></p>}
                   {job.status === "error" && <p className="text-error">Generation stopped after keeping {job.generated} validated question{job.generated === 1 ? "" : "s"}: {job.error}</p>}
                 </div>
               )}

@@ -97,7 +97,8 @@ export default function TakeExam() {
   const answeredCount = questions.reduce((n, qq) => {
     const r = responses[qq.id];
     const answered =
-      r != null && (r.index != null || r.value != null || (typeof r.text === "string" && r.text.trim() !== ""));
+      r != null && (r.index != null || r.value != null || (typeof r.text === "string" && r.text.trim() !== "") ||
+        (Array.isArray(r.pairs) && r.pairs.length === (qq.options?.left?.length || 0) && r.pairs.length > 0));
     return answered ? n + 1 : n;
   }, 0);
   const answeredRef = useRef(0);
@@ -265,11 +266,13 @@ export default function TakeExam() {
                 className="w-full border border-outline-variant rounded-lg p-3 outline-none focus:border-secondary" />
             )}
 
-            {q.type === "matching" && q.options?.left && (
-              <div className="grid grid-cols-2 gap-3 text-sm">
-                <div className="space-y-2">{q.options.left.map((l: string, i: number) => <div key={i} className="p-3 bg-surface-container rounded">{l}</div>)}</div>
-                <div className="space-y-2">{q.options.right.map((r: string, i: number) => <div key={i} className="p-3 bg-secondary-container/40 rounded">{r}</div>)}</div>
-              </div>
+            {q.type === "matching" && Array.isArray(q.options?.left) && Array.isArray(q.options?.right) && (
+              <MatchingInput
+                left={q.options.left}
+                right={q.options.right}
+                pairs={Array.isArray(responses[q.id]?.pairs) ? responses[q.id].pairs : []}
+                onChange={(pairs) => setResp(q.id, { pairs })}
+              />
             )}
           </div>
         ) : (
@@ -298,5 +301,58 @@ export default function TakeExam() {
         )}
       </div>
     </Layout>
+  );
+}
+
+// Matching answer control: each left item gets a dropdown of lettered right
+// items. Selections build the { pairs: [[leftIndex, rightIndex], ...] }
+// response shape the grader and review pages already expect.
+function MatchingInput({ left, right, pairs, onChange }: {
+  left: string[];
+  right: string[];
+  pairs: number[][];
+  onChange: (pairs: number[][]) => void;
+}) {
+  const chosen = new Map(pairs.map(([l, r]) => [l, r]));
+  const usedRight = new Set(pairs.map(([, r]) => r));
+
+  const pick = (leftIndex: number, value: string) => {
+    const next = new Map(chosen);
+    if (value === "") next.delete(leftIndex);
+    else next.set(leftIndex, Number(value));
+    onChange([...next.entries()].map(([l, r]) => [l, r]));
+  };
+
+  return (
+    <div className="space-y-4 text-sm">
+      <div className="space-y-2">
+        {left.map((item, leftIndex) => {
+          const current = chosen.get(leftIndex);
+          return (
+            <div key={leftIndex} className="flex items-center gap-3 p-3 bg-surface-container rounded-lg">
+              <span className="flex-1 text-on-surface">{leftIndex + 1}. {item}</span>
+              <select value={current ?? ""} onChange={(e) => pick(leftIndex, e.target.value)}
+                className={`w-24 border rounded-lg px-2 py-1.5 bg-white font-semibold ${current != null ? "border-secondary text-secondary" : "border-outline-variant text-on-surface-variant"}`}>
+                <option value="">Select</option>
+                {right.map((_, rightIndex) => (
+                  <option key={rightIndex} value={rightIndex}
+                    disabled={usedRight.has(rightIndex) && current !== rightIndex}>
+                    {String.fromCharCode(65 + rightIndex)}
+                  </option>
+                ))}
+              </select>
+            </div>
+          );
+        })}
+      </div>
+      <div className="space-y-2">
+        {right.map((item, rightIndex) => (
+          <div key={rightIndex} className={`p-3 rounded-lg flex gap-2 ${usedRight.has(rightIndex) ? "bg-secondary-container/40 text-on-surface" : "bg-secondary-container/20 text-on-surface"}`}>
+            <span className="font-bold shrink-0">{String.fromCharCode(65 + rightIndex)}.</span>
+            <span>{item}</span>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }

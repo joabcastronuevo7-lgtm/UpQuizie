@@ -40,7 +40,44 @@ function extractJSON(s: string): any {
   for (let end = sub.length; end > 0; end--) {
     try { return JSON.parse(sub.slice(0, end)); } catch { /* shrink */ }
   }
+  // Output that hit the num_predict cap loses the array's closing bracket and
+  // the shrink loop above cannot recover it. Salvage every complete top-level
+  // object so a truncated batch still yields its finished candidates.
+  const objects: any[] = [];
+  let depth = 0, start = -1, inString = false, escaped = false;
+  for (let i = 0; i < sub.length; i++) {
+    const ch = sub[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "{") { if (depth === 0) start = i; depth++; }
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0 && start >= 0) {
+        try { objects.push(JSON.parse(sub.slice(start, i + 1))); } catch { /* skip */ }
+        start = -1;
+      }
+    }
+  }
+  if (objects.length) return objects;
   throw new Error("could not parse JSON");
+}
+
+// Strips source-referential lead-ins ("According to the text, ...") so an
+// otherwise-valid candidate is repaired instead of rejected by the style
+// validator. Anything the rewrite cannot fix is still caught by validation.
+const SOURCE_REF =
+  /\b(?:according to|based on|as (?:stated|described|mentioned|shown|discussed)(?: in| above)?|per)\s+(?:the\s+)?(?:uploaded\s+)?(?:document|text|passage|excerpt|source|reading|material|article|content)[^,.:;?]*[,.:;]?\s*/gi;
+
+function sanitizePrompt(prompt: string): string {
+  let out = String(prompt || "").replace(SOURCE_REF, "");
+  out = out.replace(/\s{2,}/g, " ").replace(/\s+([.,;:?])/g, "$1").trim();
+  if (out) out = out[0].toUpperCase() + out.slice(1);
+  return out;
 }
 
 function toQuestionArray(parsed: any): any[] {
@@ -255,7 +292,7 @@ function deterministicQuestion(item: DistItem, source: GroundingSource, ordinal:
   if (item.type === "fill_blank") {
     return {
       type: item.type, difficulty: item.difficulty, topic: topic || "Uploaded material",
-      prompt: `Complete the following statement:\n${cloze}`,
+      prompt: `Fill in the blank:\n${cloze}`,
       options: null, answer: { accepted: [answerPhrase] }, source_index: 1, source_quote: quote,
     };
   }
@@ -267,16 +304,22 @@ function deterministicQuestion(item: DistItem, source: GroundingSource, ordinal:
     };
   }
   if (item.type === "matching") {
-    let pairs = documentPairs(source.text).slice(ordinal, ordinal + 3);
-    if (pairs.length < 2) {
-      pairs = phrases.map((phrase) => ({
+    let allPairs = documentPairs(source.text);
+    if (allPairs.length < 2) {
+      allPairs = phrases.map((phrase) => ({
         left: phrase,
         right: conciseEvidence(source.text, phrase),
         evidence: conciseEvidence(source.text, phrase),
       })).filter((pair) => pair.right.split(/\s+/).length >= 4)
-        .filter((pair, index, all) => all.findIndex((item) => item.right.toLowerCase() === pair.right.toLowerCase()) === index)
-        .slice(ordinal, ordinal + 3);
+        .filter((pair, index, all) => all.findIndex((item) => item.right.toLowerCase() === pair.right.toLowerCase()) === index);
     }
+    if (allPairs.length < 2) return null;
+    // Rotate through the available pairs so successive ordinals produce
+    // different valid sets instead of sliding past the end of the list.
+    const size = Math.min(3, allPairs.length);
+    const startIndex = (ordinal * size) % allPairs.length;
+    const pairs = Array.from({ length: size }, (_, index) => allPairs[(startIndex + index) % allPairs.length])
+      .filter((pair, index, all) => all.findIndex((p) => p.left.toLowerCase() === pair.left.toLowerCase()) === index);
     if (pairs.length < 2) return null;
     const left = pairs.map((pair) => pair.left);
     const right = pairs.map((pair) => pair.right).reverse();
@@ -291,7 +334,7 @@ function deterministicQuestion(item: DistItem, source: GroundingSource, ordinal:
   if (item.type === "essay") {
     return {
       type: item.type, difficulty: item.difficulty, topic: topic || "Uploaded material",
-      prompt: `Explain the concept presented in the following statement:\n${quote}`,
+      prompt: `Explain this concept in your own words: "${quote}"`,
       options: null,
       answer: { rubric: "Accurately explains the concept without introducing unsupported claims." },
       source_index: 1, source_quote: quote,
@@ -568,7 +611,7 @@ Uploaded source excerpts:
 ${renderSources(sources)}`;
     try {
       const output = await chat(prompt, {
-        json: true, temperature: 0.25, numPredict: Math.min(3072, want * 260 + 250),
+        json: true, temperature: 0.25, numPredict: Math.min(2048, want * 230 + 200),
       });
       return { questions: toQuestionArray(extractJSON(output)), sources };
     } catch (e) {
@@ -578,8 +621,14 @@ ${renderSources(sources)}`;
   };
 
   const tryInsert = async (item: DistItem, question: any, sources: GroundingSource[]): Promise<boolean> => {
+    question.prompt = sanitizePrompt(question?.prompt);
     const normalizedPrompt = String(question?.prompt || "").toLowerCase().replace(/\s+/g, " ").trim();
-    if (!normalizedPrompt || seen.has(normalizedPrompt)) return false;
+    // Matching questions legitimately share a stock prompt; their identity is
+    // the left-hand item set, so include it in the duplicate key.
+    const dedupKey = item.type === "matching" && Array.isArray(question?.options?.left)
+      ? `${normalizedPrompt}|${JSON.stringify(question.options.left).toLowerCase()}`
+      : normalizedPrompt;
+    if (!normalizedPrompt || seen.has(dedupKey)) return false;
     let lastReason = "no retrieved source supports this candidate";
     for (let index = 0; index < sources.length; index++) {
       question.source_index = index + 1;
@@ -589,7 +638,7 @@ ${renderSources(sources)}`;
         lastReason = grounding.reason || lastReason;
         continue;
       }
-      seen.add(normalizedPrompt);
+      seen.add(dedupKey);
       await insertQuestion(jobId, subjectId, item, question, grounding.sourceQuote, grounding.source.document_id);
       return true;
     }
@@ -605,19 +654,25 @@ ${renderSources(sources)}`;
     const target = item.count || 1;
     let produced = 0;
     let call = 0;
-    // Each candidate is one fully validated item (small local models produce
-    // more reliable JSON and more varied wording that way). Natural wording is
-    // mandatory, so we retry rejected candidates rather than substituting cloze
-    // templates. Over-generate at roughly a 20:3 ratio, keeping the first
-    // `target` candidates that pass every style and grounding validator.
-    const maxCalls = Math.max(target, Math.ceil(target * 20 / 3));
+    // MCQ uses a per-candidate multi-stage pipeline (extract fact -> write ->
+    // review), so each call yields one candidate and we over-generate at a
+    // 20:3 ratio. The other types return several candidates per call, so a
+    // much smaller call budget reaches the same candidate count far faster.
+    const perCall = item.type === "mcq" ? 1 : Math.min(4, target);
+    const maxCalls = item.type === "mcq"
+      ? Math.max(target, Math.ceil(target * 20 / 3))
+      : Math.max(2, Math.ceil(target / perCall) * 3);
     // Issue candidates in concurrent waves instead of strictly one at a time.
     // Independent candidates overlap on the GPU (bounded by `limit`) and share
     // the cached source facts, so a wave adds at most one fact-extraction call.
     while (produced < target && call < maxCalls) {
-      const waveSize = Math.min(target - produced, maxCalls - call);
+      const remaining = target - produced;
+      const waveSize = item.type === "mcq"
+        ? Math.min(remaining, maxCalls - call)
+        : Math.min(Math.max(1, Math.ceil(remaining / perCall)), maxCalls - call);
       const waveCalls = Array.from({ length: waveSize }, () => ++call);
-      const batches = await Promise.all(waveCalls.map((n) => limit(() => genBatch(item, 1, n))));
+      const batches = await Promise.all(waveCalls.map((n) =>
+        limit(() => genBatch(item, Math.min(perCall, remaining), n))));
       for (const batch of batches) {
         for (const question of batch.questions) {
           if (produced >= target) break;
@@ -626,11 +681,23 @@ ${renderSources(sources)}`;
         if (produced >= target) break;
       }
     }
+    // The small local model sometimes cannot satisfy the strict grounding
+    // contract at all for a type (matching is the usual offender). Rather than
+    // failing the row, build mechanically grounded questions straight from the
+    // uploaded chunks; they pass the same validators as LLM candidates.
+    if (produced < target) {
+      let ordinal = 0;
+      for (let attempt = 0; attempt < pool.length * 6 && produced < target; attempt++) {
+        const source = pool[attempt % pool.length];
+        const question = deterministicQuestion(item, source, ordinal++, topic);
+        if (question && await tryInsert(item, question, [source])) produced++;
+      }
+    }
     if (produced < target) {
       if (produced === 0) {
         throw new Error(
           `Generated 0/${target} validated ${item.type}/${item.difficulty} questions. ` +
-          "All candidates were rejected because they were unnatural, ambiguous, or not sufficiently grounded."
+          "The uploaded material did not support enough grounded questions of this type."
         );
       }
       console.warn(
@@ -641,10 +708,22 @@ ${renderSources(sources)}`;
     console.log(`item ${item.type}/${item.difficulty}: produced ${produced}/${target} validated questions in ${call} LLM call(s)`);
   };
 
-  // Distribution rows are independent; run them concurrently under the shared limiter.
-  await Promise.all(dist.map(processItem));
-  await query(`UPDATE generation_jobs SET status='done', finished_at=now() WHERE id=$1`, [jobId]);
-  console.log(`generation job ${jobId} completed in ${Date.now() - startedAt}ms (top-k=${RETRIEVAL_K})`);
+  // Distribution rows are independent; run them concurrently under the shared
+  // limiter. One failing row must not discard the questions the other rows
+  // produced, so collect failures instead of rejecting the whole job.
+  const results = await Promise.allSettled(dist.map(processItem));
+  const failures = results
+    .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+    .map((result) => String((result.reason as any)?.message || result.reason));
+  const [job] = await query<{ generated: number }>(
+    `SELECT generated FROM generation_jobs WHERE id=$1`, [jobId]);
+  if (failures.length && !(Number(job?.generated) > 0)) {
+    throw new Error(failures.join(" | "));
+  }
+  await query(
+    `UPDATE generation_jobs SET status='done', error=$2, finished_at=now() WHERE id=$1`,
+    [jobId, failures.length ? `Some questions could not be generated: ${failures.join(" | ")}` : null]);
+  console.log(`generation job ${jobId} completed in ${Date.now() - startedAt}ms (top-k=${RETRIEVAL_K}, rowFailures=${failures.length})`);
 }
 
 app.get("/health", (_req, res) => res.json({ status: "ok" }));
