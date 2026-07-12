@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import Layout, { Icon } from "../components/Layout";
 import { api, Subject, DocumentMeta } from "../api";
@@ -6,7 +7,7 @@ import ReviewQuestions from "./ReviewQuestions";
 
 interface DistRow { type: string; difficulty: string; count: number; points: number }
 interface JobStatus { status: "running" | "done" | "error"; requested: number; generated: number; error?: string | null }
-interface GenerationOptions { documents: { id: string; filename: string }[]; topics: string[] }
+interface GenerationOptions { documents: { id: string; filename: string; module_label: string }[]; topics: string[] }
 
 // Observed generation speed on the reference GPU: ~10s per validated question.
 // Used for the initial estimate until the running job reveals its actual rate.
@@ -30,6 +31,7 @@ const TYPE_LABELS: Record<string, string> = {
 
 export default function EducatorDashboard() {
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const { data: subjects = [] } = useQuery({ queryKey: ["subjects"], queryFn: () => api.get<Subject[]>("/subjects") });
 
   const [subjectId, setSubjectId] = useState("");
@@ -52,8 +54,7 @@ export default function EducatorDashboard() {
   });
   const readyDocuments = documents.filter((document) => document.status === "ready");
   const validDocumentIds = documentIds.filter((id) => readyDocuments.some((document) => document.id === id));
-  const selectedDocumentIds = validDocumentIds.length > 0
-    ? validDocumentIds : readyDocuments[0] ? [readyDocuments[0].id] : [];
+  const selectedDocumentIds = validDocumentIds;
   const selectedDocumentKey = selectedDocumentIds.join(",");
   const { data: generationOptions } = useQuery<GenerationOptions>({
     queryKey: ["generation-options", sid, selectedDocumentKey],
@@ -114,6 +115,10 @@ export default function EducatorDashboard() {
 
   return (
     <Layout title="Generate & Review Questions">
+      <button onClick={() => navigate(sid ? `/subjects/${sid}` : "/subjects")}
+        className="flex items-center gap-1 text-secondary text-sm font-semibold mb-5 hover:underline">
+        <Icon name="arrow_back" className="text-[18px]" /> Back to Subject
+      </button>
       <div className="grid grid-cols-12 gap-6">
         {/* Left: exam configuration */}
         <section className="col-span-12 space-y-6">
@@ -252,9 +257,21 @@ function DocumentDropdown({ documents, selected, onChange }: {
   documents: DocumentMeta[]; selected: string[]; onChange: (ids: string[]) => void;
 }) {
   const selectedNames = documents.filter((document) => selected.includes(document.id)).map((document) => document.filename);
+  const grouped = documents.reduce<Record<string, DocumentMeta[]>>((groups, document) => {
+    const label = document.module_label || "Module 1";
+    groups[label] = [...(groups[label] || []), document];
+    return groups;
+  }, {});
+  const modules = Object.keys(grouped).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  const selectedModules = modules.filter((moduleLabel) =>
+    grouped[moduleLabel].length > 0 && grouped[moduleLabel].every((document) => selected.includes(document.id))
+  );
   const label = documents.length === 0
     ? "No ready documents"
-    : selectedNames.length === 1 ? selectedNames[0] : `${selectedNames.length} documents selected`;
+    : selected.length === 0 ? "No documents selected"
+    : selectedModules.length === 1 && selected.length === grouped[selectedModules[0]].length
+      ? `${selectedModules[0]} selected`
+      : selectedNames.length === 1 ? selectedNames[0] : `${selectedNames.length} documents selected`;
   return (
     <details className={`relative mt-1.5 group ${documents.length === 0 ? "pointer-events-none opacity-60" : ""}`}>
       <summary className="w-full border border-outline-variant rounded-lg px-3 py-2.5 bg-white cursor-pointer list-none flex items-center justify-between">
@@ -262,19 +279,46 @@ function DocumentDropdown({ documents, selected, onChange }: {
       </summary>
       <div className="absolute z-30 mt-1 w-full max-h-64 overflow-y-auto rounded-lg border border-outline-variant bg-white shadow-xl p-2">
         {documents.length > 1 && (
-          <button type="button" onClick={() => onChange(documents.map((document) => document.id))}
+          <button type="button" onClick={() => {
+            const allDocumentIds = documents.map((document) => document.id);
+            const allSelected = allDocumentIds.every((id) => selected.includes(id));
+            onChange(allSelected ? [] : allDocumentIds);
+          }}
             className="w-full text-left px-2 py-2 rounded text-sm font-semibold text-secondary hover:bg-surface-container-low">
-            Select all documents
+            {documents.every((document) => selected.includes(document.id)) ? "Deselect all documents" : "Select all documents"}
           </button>
         )}
-        {documents.map((document) => (
-          <label key={document.id} className="flex items-center gap-2 px-2 py-2 rounded text-sm hover:bg-surface-container-low cursor-pointer">
-            <input type="checkbox" checked={selected.includes(document.id)} onChange={(event) => {
-              if (event.target.checked) onChange([...selected, document.id]);
-              else if (selected.length > 1) onChange(selected.filter((id) => id !== document.id));
-            }} />
-            <span className="truncate" title={document.filename}>{document.filename}</span>
-          </label>
+        {modules.map((moduleLabel) => (
+          <div key={moduleLabel} className="pt-2 first:pt-0">
+            <button
+              type="button"
+              onClick={() => {
+                const moduleIds = grouped[moduleLabel].map((document) => document.id);
+                const allSelected = moduleIds.every((id) => selected.includes(id));
+                const next = allSelected
+                  ? selected.filter((id) => !moduleIds.includes(id))
+                  : Array.from(new Set([...selected, ...moduleIds]));
+                onChange(next);
+              }}
+              className="w-full px-2 py-2 rounded text-left text-[11px] font-bold uppercase text-on-surface-variant hover:bg-secondary-container hover:text-on-secondary-container flex items-center justify-between gap-2"
+            >
+              <span className="flex items-center gap-2">
+                <Icon name="folder" className="text-[16px]" /> {moduleLabel}
+              </span>
+              <span className="normal-case text-[10px] font-semibold">
+                {grouped[moduleLabel].filter((document) => selected.includes(document.id)).length}/{grouped[moduleLabel].length} selected
+              </span>
+            </button>
+            {grouped[moduleLabel].map((document) => (
+              <label key={document.id} className="flex items-center gap-2 px-2 py-2 rounded text-sm hover:bg-surface-container-low cursor-pointer">
+                <input type="checkbox" checked={selected.includes(document.id)} onChange={(event) => {
+                  if (event.target.checked) onChange([...selected, document.id]);
+                  else if (selected.length > 1) onChange(selected.filter((id) => id !== document.id));
+                }} />
+                <span className="truncate" title={document.filename}>{document.filename}</span>
+              </label>
+            ))}
+          </div>
         ))}
       </div>
     </details>

@@ -24,8 +24,18 @@ export default function TakeExam() {
 
   useEffect(() => {
     if (!id) return;
-    api.get<{ requires_code: boolean; exam_mode: "take_home" | "live"; live_state: string }>(`/exams/${id}/access`)
-      .then((r) => { setNeedCode(r.requires_code); if (!r.requires_code) begin(); })
+    api.get<{ requires_code: boolean; exam_mode: "take_home" | "live"; live_state: string; open: boolean; starts_at?: string | null; block_reason?: string }>(`/exams/${id}/access`)
+      .then((r) => {
+        if (!r.open) {
+          setNeedCode(false);
+          setStartError(r.block_reason === "ended"
+            ? "This live exam has ended. Ask your teacher to activate it again."
+            : r.starts_at ? `This exam opens on ${new Date(r.starts_at).toLocaleString()}.` : "This exam is not open yet.");
+          return;
+        }
+        setNeedCode(r.requires_code);
+        if (!r.requires_code) begin();
+      })
       .catch(() => { setNeedCode(false); begin(); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
