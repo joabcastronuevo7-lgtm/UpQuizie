@@ -66,6 +66,7 @@ func main() {
 	api.POST("/auth/logout", handleLogout)
 
 	api.GET("/avatars/:name", serveAvatar)
+	api.GET("/question-images/:name", serveQuestionImage)
 
 	auth := api.Group("")
 	auth.Use(authMiddleware())
@@ -97,6 +98,8 @@ func main() {
 		auth.GET("/subjects/:id/question-bank", requireSubjectOwner(), questionBank)
 		auth.DELETE("/subjects/:id/generated", requireSubjectOwner(), deleteAllGenerated)
 		auth.PATCH("/generated/:gid", requireRole("educator", "admin"), updateGenerated)
+		auth.POST("/generated/:gid/image", requireRole("educator", "admin"), uploadGeneratedQuestionImage)
+		auth.DELETE("/generated/:gid/image", requireRole("educator", "admin"), removeGeneratedQuestionImage)
 
 		// Exams (built from approved questions)
 		auth.GET("/exams", listExams)
@@ -159,6 +162,8 @@ func ensureSchema() {
 		`CREATE INDEX IF NOT EXISTS idx_documents_module ON uploaded_documents(subject_id, module_label)`,
 		`ALTER TABLE exams ADD COLUMN IF NOT EXISTS starts_at TIMESTAMPTZ`,
 		`ALTER TABLE exams ADD COLUMN IF NOT EXISTS due_at TIMESTAMPTZ`,
+		`ALTER TABLE generated_questions ADD COLUMN IF NOT EXISTS image_url TEXT`,
+		`ALTER TABLE exam_questions ADD COLUMN IF NOT EXISTS image_url TEXT`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(ctx, statement); err != nil {

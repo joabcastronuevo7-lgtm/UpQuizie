@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -153,7 +156,7 @@ func dropStudent(c *gin.Context) {
 func listGenerated(c *gin.Context) {
 	status := c.DefaultQuery("status", "pending")
 	rows, err := db.Query(context.Background(),
-		`SELECT id, type, difficulty, points, prompt, options, answer, topic, source_ref, status
+		`SELECT id, type, difficulty, points, prompt, options, answer, topic, image_url, source_ref, status
 		 FROM generated_questions WHERE subject_id=$1 AND status=$2 ORDER BY created_at`,
 		c.Param("id"), status)
 	if err != nil {
@@ -166,11 +169,11 @@ func listGenerated(c *gin.Context) {
 		var id, qtype, diff, prompt, st string
 		var pts int
 		var options, answer []byte
-		var topic, sref *string
-		rows.Scan(&id, &qtype, &diff, &pts, &prompt, &options, &answer, &topic, &sref, &st)
+		var topic, imageURL, sref *string
+		rows.Scan(&id, &qtype, &diff, &pts, &prompt, &options, &answer, &topic, &imageURL, &sref, &st)
 		out = append(out, gin.H{"id": id, "type": qtype, "difficulty": diff, "points": pts,
 			"prompt": prompt, "options": json.RawMessage(options), "answer": json.RawMessage(answer),
-			"topic": topic, "source_ref": sref, "status": st})
+			"topic": topic, "image_url": imageURL, "source_ref": sref, "status": st})
 	}
 	c.JSON(200, out)
 }
@@ -194,6 +197,7 @@ func updateGenerated(c *gin.Context) {
 		Prompt     *string         `json:"prompt"`
 		Difficulty *string         `json:"difficulty"`
 		Points     *int            `json:"points"`
+		ImageURL   *string         `json:"image_url"`
 		Options    json.RawMessage `json:"options"`
 		Answer     json.RawMessage `json:"answer"`
 	}
@@ -207,16 +211,81 @@ func updateGenerated(c *gin.Context) {
 		   prompt     = COALESCE($3, prompt),
 		   difficulty = COALESCE($4, difficulty),
 		   points     = COALESCE($5, points),
-		   options    = COALESCE($6, options),
-		   answer     = COALESCE($7, answer)
+		   image_url  = COALESCE($6, image_url),
+		   options    = COALESCE($7, options),
+		   answer     = COALESCE($8, answer)
 		 WHERE id=$1`,
 		c.Param("gid"), req.Status, req.Prompt, req.Difficulty, req.Points,
-		jsonOrNil(req.Options), jsonOrNil(req.Answer))
+		req.ImageURL, jsonOrNil(req.Options), jsonOrNil(req.Answer))
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(200, gin.H{"ok": true})
+}
+
+func uploadGeneratedQuestionImage(c *gin.Context) {
+	questionID := c.Param("gid")
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file is required (multipart field 'file')"})
+		return
+	}
+	if fileHeader.Size > 8<<20 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "image must be 8 MB or smaller"})
+		return
+	}
+	ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
+	allowed := map[string]bool{".jpg": true, ".jpeg": true, ".png": true, ".webp": true, ".gif": true}
+	if !allowed[ext] {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "image must be jpg, png, webp, or gif"})
+		return
+	}
+	dir := filepath.Join(uploadDir, "question-images")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	name := fmt.Sprintf("%s-%d%s", questionID, time.Now().UnixNano(), ext)
+	path := filepath.Join(dir, name)
+	if err := c.SaveUploadedFile(fileHeader, path); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not save file: " + err.Error()})
+		return
+	}
+	url := "/api/question-images/" + name
+	var oldURL *string
+	err = db.QueryRow(context.Background(),
+		`UPDATE generated_questions SET image_url=$2 WHERE id=$1 RETURNING image_url`,
+		questionID, url).Scan(&oldURL)
+	if err != nil {
+		_ = os.Remove(path)
+		c.JSON(http.StatusNotFound, gin.H{"error": "question not found"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"image_url": url})
+}
+
+func removeGeneratedQuestionImage(c *gin.Context) {
+	tag, err := db.Exec(context.Background(), `UPDATE generated_questions SET image_url=NULL WHERE id=$1`, c.Param("gid"))
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		c.JSON(404, gin.H{"error": "question not found"})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true})
+}
+
+func serveQuestionImage(c *gin.Context) {
+	name := filepath.Base(c.Param("name"))
+	path := filepath.Join(uploadDir, "question-images", name)
+	if _, err := os.Stat(path); err != nil {
+		c.Status(http.StatusNotFound)
+		return
+	}
+	c.File(path)
 }
 
 func questionBank(c *gin.Context) {
@@ -241,7 +310,7 @@ func questionBank(c *gin.Context) {
 			continue
 		}
 		questionRows, err := db.Query(ctx,
-			`SELECT id, type, difficulty, points, prompt, options, answer, topic, source_ref, position
+			`SELECT id, type, difficulty, points, prompt, options, answer, topic, image_url, source_ref, position
 			 FROM exam_questions WHERE exam_id=$1 ORDER BY position`, examID)
 		if err != nil {
 			c.JSON(500, gin.H{"error": err.Error()})
@@ -252,11 +321,11 @@ func questionBank(c *gin.Context) {
 			var id, qtype, diff, prompt string
 			var pts, pos int
 			var options, answer []byte
-			var topic, sref *string
-			questionRows.Scan(&id, &qtype, &diff, &pts, &prompt, &options, &answer, &topic, &sref, &pos)
+			var topic, imageURL, sref *string
+			questionRows.Scan(&id, &qtype, &diff, &pts, &prompt, &options, &answer, &topic, &imageURL, &sref, &pos)
 			questions = append(questions, gin.H{"id": id, "type": qtype, "difficulty": diff, "points": pts,
 				"prompt": prompt, "options": json.RawMessage(options), "answer": json.RawMessage(answer),
-				"topic": topic, "source_ref": sref, "position": pos})
+				"topic": topic, "image_url": imageURL, "source_ref": sref, "position": pos})
 		}
 		questionRows.Close()
 		groups = append(groups, gin.H{
@@ -272,7 +341,7 @@ func questionBank(c *gin.Context) {
 	}
 
 	generatedRows, err := db.Query(ctx,
-		`SELECT id, type, difficulty, points, prompt, options, answer, topic, source_ref, status, created_at
+		`SELECT id, type, difficulty, points, prompt, options, answer, topic, image_url, source_ref, status, created_at
 		 FROM generated_questions WHERE subject_id=$1 ORDER BY created_at DESC`, subjectID)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
@@ -284,12 +353,12 @@ func questionBank(c *gin.Context) {
 		var id, qtype, diff, prompt, status string
 		var pts int
 		var options, answer []byte
-		var topic, sref *string
+		var topic, imageURL, sref *string
 		var createdAt time.Time
-		generatedRows.Scan(&id, &qtype, &diff, &pts, &prompt, &options, &answer, &topic, &sref, &status, &createdAt)
+		generatedRows.Scan(&id, &qtype, &diff, &pts, &prompt, &options, &answer, &topic, &imageURL, &sref, &status, &createdAt)
 		generated = append(generated, gin.H{"id": id, "type": qtype, "difficulty": diff, "points": pts,
 			"prompt": prompt, "options": json.RawMessage(options), "answer": json.RawMessage(answer),
-			"topic": topic, "source_ref": sref, "status": status, "created_at": createdAt})
+			"topic": topic, "image_url": imageURL, "source_ref": sref, "status": status, "created_at": createdAt})
 	}
 	groups = append(groups, gin.H{
 		"group_type": "generated",
@@ -415,8 +484,8 @@ func createExam(c *gin.Context) {
 		switch ref.Source {
 		case "", "generated":
 			tag, execErr := db.Exec(ctx,
-				`INSERT INTO exam_questions (exam_id,type,difficulty,points,prompt,options,answer,topic,source_ref,position)
-				 SELECT $1,type,difficulty,points,prompt,options,answer,topic,source_ref,$2
+				`INSERT INTO exam_questions (exam_id,type,difficulty,points,prompt,options,answer,topic,image_url,source_ref,position)
+				 SELECT $1,type,difficulty,points,prompt,options,answer,topic,image_url,source_ref,$2
 				 FROM generated_questions WHERE id=$3 AND subject_id=$4`,
 				examID, position, ref.ID, req.SubjectID)
 			err = execErr
@@ -426,8 +495,8 @@ func createExam(c *gin.Context) {
 			}
 		case "bank", "exam":
 			tag, execErr := db.Exec(ctx,
-				`INSERT INTO exam_questions (exam_id,type,difficulty,points,prompt,options,answer,topic,source_ref,position)
-				 SELECT $1,q.type,q.difficulty,q.points,q.prompt,q.options,q.answer,q.topic,q.source_ref,$2
+				`INSERT INTO exam_questions (exam_id,type,difficulty,points,prompt,options,answer,topic,image_url,source_ref,position)
+				 SELECT $1,q.type,q.difficulty,q.points,q.prompt,q.options,q.answer,q.topic,q.image_url,q.source_ref,$2
 				 FROM exam_questions q
 				 JOIN exams e ON e.id=q.exam_id
 				 WHERE q.id=$3 AND e.subject_id=$4`,
@@ -585,7 +654,7 @@ func listExamQuestions(c *gin.Context) {
 		}
 	}
 	rows, err := db.Query(context.Background(),
-		`SELECT id, type, difficulty, points, prompt, options, answer, topic, source_ref, position
+		`SELECT id, type, difficulty, points, prompt, options, answer, topic, image_url, source_ref, position
 		 FROM exam_questions WHERE exam_id=$1 ORDER BY position`, c.Param("id"))
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
@@ -597,11 +666,11 @@ func listExamQuestions(c *gin.Context) {
 		var id, qtype, diff, prompt string
 		var pts, pos int
 		var options, answer []byte
-		var topic, sref *string
-		rows.Scan(&id, &qtype, &diff, &pts, &prompt, &options, &answer, &topic, &sref, &pos)
+		var topic, imageURL, sref *string
+		rows.Scan(&id, &qtype, &diff, &pts, &prompt, &options, &answer, &topic, &imageURL, &sref, &pos)
 		q := gin.H{"id": id, "type": qtype, "difficulty": diff, "points": pts,
 			"prompt": prompt, "options": json.RawMessage(options), "topic": topic,
-			"source_ref": sref, "position": pos}
+			"image_url": imageURL, "source_ref": sref, "position": pos}
 		if includeAnswers {
 			q["answer"] = json.RawMessage(answer)
 		}
@@ -612,10 +681,11 @@ func listExamQuestions(c *gin.Context) {
 
 func updateExamQuestion(c *gin.Context) {
 	var req struct {
-		Prompt  *string         `json:"prompt"`
-		Points  *int            `json:"points"`
-		Options json.RawMessage `json:"options"`
-		Answer  json.RawMessage `json:"answer"`
+		Prompt   *string         `json:"prompt"`
+		Points   *int            `json:"points"`
+		ImageURL *string         `json:"image_url"`
+		Options  json.RawMessage `json:"options"`
+		Answer   json.RawMessage `json:"answer"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
@@ -634,10 +704,11 @@ func updateExamQuestion(c *gin.Context) {
 		`UPDATE exam_questions SET
 		   prompt = COALESCE($2, prompt),
 		   points = COALESCE($3, points),
-		   options = COALESCE($4, options),
-		   answer = COALESCE($5, answer)
+		   image_url = COALESCE($4, image_url),
+		   options = COALESCE($5, options),
+		   answer = COALESCE($6, answer)
 		 WHERE id=$1 RETURNING exam_id`,
-		c.Param("qid"), req.Prompt, req.Points, jsonOrNil(req.Options), jsonOrNil(req.Answer)).Scan(&examID)
+		c.Param("qid"), req.Prompt, req.Points, req.ImageURL, jsonOrNil(req.Options), jsonOrNil(req.Answer)).Scan(&examID)
 	if err != nil {
 		c.JSON(404, gin.H{"error": "question not found"})
 		return

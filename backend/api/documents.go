@@ -343,6 +343,7 @@ func generateQuestions(c *gin.Context) {
 	subjectID := c.Param("id")
 	var req struct {
 		Topic        string   `json:"topic"`
+		Topics       []string `json:"topics"`
 		DocumentID   string   `json:"document_id"`
 		DocumentIDs  []string `json:"document_ids"`
 		Distribution []struct {
@@ -360,6 +361,7 @@ func generateQuestions(c *gin.Context) {
 	body, _ := json.Marshal(gin.H{
 		"subject_id":   subjectID,
 		"topic":        req.Topic,
+		"topics":       req.Topics,
 		"document_id":  req.DocumentID,
 		"document_ids": req.DocumentIDs,
 		"distribution": req.Distribution,

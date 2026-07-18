@@ -90,6 +90,7 @@ export interface Question {
   options: any;
   answer?: any;
   topic?: string;
+  image_url?: string | null;
   source_ref?: string;
   status?: string;
   position?: number;

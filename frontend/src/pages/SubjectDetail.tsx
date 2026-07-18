@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Layout, { Icon } from "../components/Layout";
+import QuestionPrompt from "../components/QuestionPrompt";
 import { api, Exam, Question, Subject } from "../api";
 import { useAuth } from "../auth";
 import ScoreReview from "./ScoreReview";
@@ -328,7 +329,14 @@ export default function SubjectDetail() {
                                 </button>
                               </div>
                             ) : (
-                              <p className="text-sm text-on-surface">{question.prompt}</p>
+                              <div className="space-y-3">
+                                <QuestionPrompt
+                                  prompt={question.prompt}
+                                  imageUrl={question.image_url}
+                                  className="space-y-2 text-sm text-on-surface"
+                                  imageWrapperClassName="rounded-lg border border-outline-variant bg-surface-container-low p-2"
+                                />
+                              </div>
                             )}
                           </div>
                         ))}

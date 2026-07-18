@@ -83,6 +83,7 @@ CREATE TABLE generated_questions (
     options     JSONB,
     answer      JSONB,
     topic       TEXT,
+    image_url   TEXT,
     source_ref  TEXT,                         -- grounding quote from retrieved chunk
     status      generated_status NOT NULL DEFAULT 'pending',
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -118,6 +119,7 @@ CREATE TABLE exam_questions (
     options     JSONB,
     answer      JSONB,
     topic       TEXT,
+    image_url   TEXT,
     source_ref  TEXT,
     position    INT NOT NULL DEFAULT 0
 );

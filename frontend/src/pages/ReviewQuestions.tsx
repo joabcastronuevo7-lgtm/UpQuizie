@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import Layout, { Icon } from "../components/Layout";
+import QuestionPrompt, { QUESTION_IMAGE_TOKEN, insertQuestionImageToken } from "../components/QuestionPrompt";
 import { api, Subject, Question } from "../api";
 
 function asText(v: unknown): string {
@@ -63,6 +64,7 @@ export default function ReviewQuestions({ embedded = false, subjectId: controlle
   const [shuffledIds, setShuffledIds] = useState<string[]>([]);
   const [showPreview, setShowPreview] = useState(false);
   const [msg, setMsg] = useState("");
+  const promptRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
 
   const { data: subjects = [] } = useQuery({
     queryKey: ["subjects"],
@@ -128,6 +130,24 @@ export default function ReviewQuestions({ embedded = false, subjectId: controlle
 
   const setDraft = (id: string, patch: Partial<Draft>) =>
     setDrafts((d) => ({ ...d, [id]: { ...d[id], ...patch } }));
+
+  const insertInlineImage = (question: Question) => {
+    const draft = drafts[question.id] || {
+      prompt: asText(question.prompt),
+      points: question.points ?? 1,
+      options: question.options ?? null,
+      answer: question.answer ?? {},
+    };
+    const input = promptRefs.current[question.id];
+    const nextPrompt = insertQuestionImageToken(draft.prompt, input?.selectionStart, input?.selectionEnd);
+    setDraft(question.id, { prompt: nextPrompt });
+    requestAnimationFrame(() => {
+      const current = promptRefs.current[question.id];
+      current?.focus();
+      const tokenIndex = nextPrompt.indexOf(QUESTION_IMAGE_TOKEN);
+      if (current && tokenIndex >= 0) current.setSelectionRange(tokenIndex, tokenIndex + QUESTION_IMAGE_TOKEN.length);
+    });
+  };
 
   const save = useMutation({
     mutationFn: ({ id, d }: { id: string; d: Draft }) =>
@@ -204,6 +224,40 @@ export default function ReviewQuestions({ embedded = false, subjectId: controlle
       }
     },
     onError: (error: Error) => setMsg(`Exam creation failed: ${error.message}`),
+  });
+
+  const uploadQuestionImage = useMutation({
+    mutationFn: ({ id, file }: { id: string; file: File }) =>
+      api.upload<{ image_url: string }>(`/generated/${id}/image`, file),
+    onSuccess: async (_result, variables) => {
+      const question = questions.find((item) => item.id === variables.id);
+      if (question) {
+        const draft = drafts[question.id] || {
+          prompt: asText(question.prompt),
+          points: question.points ?? 1,
+          options: question.options ?? null,
+          answer: question.answer ?? {},
+        };
+        const input = promptRefs.current[question.id];
+        const nextPrompt = insertQuestionImageToken(draft.prompt, input?.selectionStart, input?.selectionEnd);
+        setDraft(question.id, { prompt: nextPrompt });
+        await api.patch(`/generated/${question.id}`, { prompt: nextPrompt });
+      }
+      setMsg("Question image inserted.");
+      qc.invalidateQueries({ queryKey: ["generated", sid] });
+      qc.invalidateQueries({ queryKey: ["question-bank", sid] });
+    },
+    onError: (error: Error) => setMsg(`Image upload failed: ${error.message}`),
+  });
+
+  const removeQuestionImage = useMutation({
+    mutationFn: (id: string) => api.del(`/generated/${id}/image`),
+    onSuccess: () => {
+      setMsg("Question image removed.");
+      qc.invalidateQueries({ queryKey: ["generated", sid] });
+      qc.invalidateQueries({ queryKey: ["question-bank", sid] });
+    },
+    onError: (error: Error) => setMsg(`Remove image failed: ${error.message}`),
   });
 
   const chosen = Object.keys(selected).filter((k) => selected[k]);
@@ -357,10 +411,19 @@ export default function ReviewQuestions({ embedded = false, subjectId: controlle
                 {/* Question text */}
                 <div className="space-y-1.5">
                   <label className="text-[11px] font-bold uppercase tracking-wider text-outline">Question Text</label>
-                  <textarea rows={2} value={d.prompt}
+                  <textarea ref={(node) => { promptRefs.current[q.id] = node; }} rows={2} value={d.prompt}
                     onChange={(e) => setDraft(q.id, { prompt: e.target.value })}
                     className="w-full bg-surface border border-outline-variant rounded-lg p-3 text-body-md focus:ring-2 focus:ring-secondary/20 focus:border-secondary outline-none" />
                 </div>
+
+                <QuestionImageEditor
+                  question={q}
+                  uploading={uploadQuestionImage.isPending}
+                  removing={removeQuestionImage.isPending}
+                  onUpload={(file) => uploadQuestionImage.mutate({ id: q.id, file })}
+                  onInsert={() => insertInlineImage(q)}
+                  onRemove={() => removeQuestionImage.mutate(q.id)}
+                />
 
                 {/* Answer editor by type */}
                 <AnswerEditor q={q} draft={d} setDraft={(p) => setDraft(q.id, p)} />
@@ -472,7 +535,12 @@ export default function ReviewQuestions({ embedded = false, subjectId: controlle
                               <span className={`px-2 py-0.5 rounded-full text-xs font-semibold capitalize ${diffStyle[question.difficulty] || "bg-surface-container-high"}`}>{asText(question.difficulty)}</span>
                               <span className="px-2 py-0.5 rounded-full bg-surface-container-high text-xs font-semibold text-on-surface-variant">{question.points} pts</span>
                             </div>
-                            <p className="text-sm font-semibold text-on-surface leading-6">{question.prompt}</p>
+                            <QuestionPrompt
+                              prompt={question.prompt}
+                              imageUrl={question.image_url}
+                              className="space-y-2 text-sm font-semibold text-on-surface leading-6"
+                              imageWrapperClassName="mt-3 rounded-lg border border-outline-variant bg-surface-container-low p-2"
+                            />
                             <PreviewOptions question={question} options={question.options} answer={question.answer} compact />
                           </div>
                         </label>
@@ -581,7 +649,14 @@ export default function ReviewQuestions({ embedded = false, subjectId: controlle
                     <div className="flex items-start gap-4">
                       <span className="w-8 h-8 rounded-full bg-secondary-container text-on-secondary-container flex items-center justify-center font-bold text-sm shrink-0">{index + 1}</span>
                       <div className="flex-1 min-w-0">
-                        <div className="flex justify-between gap-3"><p className="font-semibold text-on-surface leading-6">{draft.prompt}</p><span className="text-xs text-on-surface-variant whitespace-nowrap">{draft.points} pts</span></div>
+                        <div className="flex justify-between gap-3">
+                          <QuestionPrompt
+                            prompt={draft.prompt}
+                            imageUrl={question.image_url}
+                            className="space-y-2 font-semibold text-on-surface leading-6"
+                          />
+                          <span className="text-xs text-on-surface-variant whitespace-nowrap">{draft.points} pts</span>
+                        </div>
                         <PreviewOptions question={question} options={draft.options} answer={draft.answer} />
                       </div>
                     </div>
@@ -610,6 +685,76 @@ export default function ReviewQuestions({ embedded = false, subjectId: controlle
     </>
   );
   return embedded ? content : <Layout title="Review Questions">{content}</Layout>;
+}
+
+function QuestionImage({ imageUrl, compact = false }: { imageUrl?: string | null; compact?: boolean }) {
+  if (!imageUrl) return null;
+  return (
+    <div className={`${compact ? "mt-3" : "mt-4"} rounded-lg border border-outline-variant bg-surface-container-low p-2`}>
+      <img
+        src={imageUrl}
+        alt="Question diagram"
+        className="max-h-72 w-full rounded-md object-contain"
+      />
+    </div>
+  );
+}
+
+function QuestionImageEditor({ question, uploading, removing, onUpload, onInsert, onRemove }: {
+  question: Question;
+  uploading: boolean;
+  removing: boolean;
+  onUpload: (file: File) => void;
+  onInsert: () => void;
+  onRemove: () => void;
+}) {
+  return (
+    <div className="rounded-lg border border-outline-variant bg-surface-container-low p-3">
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div>
+          <p className="text-[11px] font-bold uppercase tracking-wider text-on-surface-variant">Question image / diagram</p>
+          <p className="text-xs text-on-surface-variant mt-1">Optional. Use this for figures, circuits, graphs, automata diagrams, or tables.</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-secondary px-3 py-2 text-sm font-semibold text-secondary hover:bg-secondary-container/30">
+            <Icon name="image" className="text-[18px]" />
+            {question.image_url ? "Replace image" : "Attach image"}
+            <input
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/gif"
+              disabled={uploading}
+              className="hidden"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) onUpload(file);
+                event.target.value = "";
+              }}
+            />
+          </label>
+          {question.image_url && (
+            <button
+              type="button"
+              onClick={onInsert}
+              className="inline-flex items-center gap-2 rounded-lg border border-primary px-3 py-2 text-sm font-semibold text-primary hover:bg-primary-container/20"
+            >
+              <Icon name="add_photo_alternate" className="text-[18px]" /> Insert in text
+            </button>
+          )}
+          {question.image_url && (
+            <button
+              type="button"
+              onClick={onRemove}
+              disabled={removing}
+              className="inline-flex items-center gap-2 rounded-lg border border-error px-3 py-2 text-sm font-semibold text-error hover:bg-error-container disabled:opacity-50"
+            >
+              <Icon name="delete" className="text-[18px]" /> Remove
+            </button>
+          )}
+        </div>
+      </div>
+      <QuestionImage imageUrl={question.image_url} compact />
+    </div>
+  );
 }
 
 function PreviewOptions({ question, options, answer, compact = false }: { question: Question; options: any; answer?: any; compact?: boolean }) {

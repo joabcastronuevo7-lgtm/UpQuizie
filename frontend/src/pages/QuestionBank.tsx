@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import Layout, { Icon } from "../components/Layout";
+import QuestionPrompt from "../components/QuestionPrompt";
 import { api, Question, Subject } from "../api";
 
 interface BankGroup {
@@ -130,7 +131,12 @@ function QuestionRow({ question, index }: { question: Question; index: number })
             {question.topic && <span className="px-2 py-1 rounded-full bg-primary-container/20 text-xs font-semibold text-primary">{question.topic}</span>}
             {question.status && <span className="px-2 py-1 rounded-full bg-green-100 text-xs font-semibold text-green-800">{question.status}</span>}
           </div>
-          <p className="font-semibold text-on-surface leading-6">{question.prompt}</p>
+          <QuestionPrompt
+            prompt={question.prompt}
+            imageUrl={question.image_url}
+            className="space-y-2 font-semibold text-on-surface leading-6"
+            imageWrapperClassName="mt-3 rounded-lg border border-outline-variant bg-surface-container-low p-2"
+          />
           <AnswerPreview question={question} />
         </div>
       </div>
