@@ -143,11 +143,107 @@ test("allows a concise generic matching instruction when every pair is grounded"
   const result = validateGroundedQuestion({
     type: "matching", prompt: "Match each term with its corresponding statement.",
     options: {
-      left: ["Photosynthesis", "Mitochondria"],
-      right: ["Mitochondria release energy from food", "Photosynthesis occurs in the chloroplast"],
+      left: ["Photosynthesis", "Stomata"],
+      right: ["regulate gas exchange", "occurs in the chloroplast"],
     },
     answer: { pairs: [[0, 1], [1, 0]] }, source_index: 1,
     source_quote: "Photosynthesis occurs in the chloroplast.",
   }, "matching", sources);
   assert.equal(result.valid, true);
+});
+
+test("rejects a matching statement that names the term it matches", () => {
+  const result = validateGroundedQuestion({
+    type: "matching", prompt: "Match each term with its corresponding statement.",
+    options: {
+      left: ["Photosynthesis", "Stomata"],
+      // The first statement gives its own answer away.
+      right: ["Photosynthesis occurs in the chloroplast", "regulate gas exchange"],
+    },
+    answer: { pairs: [[0, 0], [1, 1]] }, source_index: 1,
+    source_quote: "Photosynthesis occurs in the chloroplast.",
+  }, "matching", sources);
+  assert.equal(result.valid, false);
+  assert.match(result.reason || "", /must not contain the term/);
+});
+
+test("rejects matching pairs that are not one-to-one", () => {
+  const result = validateGroundedQuestion({
+    type: "matching", prompt: "Match each term with its corresponding statement.",
+    options: {
+      left: ["Photosynthesis", "Stomata"],
+      right: ["regulate gas exchange", "occurs in the chloroplast"],
+    },
+    // Both terms claim the same statement.
+    answer: { pairs: [[0, 1], [1, 1]] }, source_index: 1,
+    source_quote: "Photosynthesis occurs in the chloroplast.",
+  }, "matching", sources);
+  assert.equal(result.valid, false);
+  assert.match(result.reason || "", /one-to-one/);
+});
+
+test("rejects a true/false answer that is not boolean", () => {
+  const result = validateGroundedQuestion({
+    type: "true_false", prompt: "Chlorophyll absorbs red light and blue light.",
+    options: ["True", "False"],
+    answer: { correct: "yes" } as any, source_index: 1,
+    source_quote: "Chlorophyll absorbs red light and blue light.",
+  }, "true_false", sources);
+  assert.equal(result.valid, false);
+  assert.match(result.reason || "", /boolean/);
+});
+
+test("rejects an essay question with no rubric", () => {
+  const result = validateGroundedQuestion({
+    type: "essay", prompt: "Explain how chlorophyll contributes to photosynthesis.",
+    answer: {}, source_index: 1,
+    source_quote: "Chlorophyll absorbs red light and blue light.",
+  }, "essay", sources);
+  assert.equal(result.valid, false);
+  assert.match(result.reason || "", /rubric/);
+});
+
+test("accepts a fill-blank whose accepted answer appears in the evidence quote", () => {
+  const result = validateGroundedQuestion({
+    type: "fill_blank", prompt: "Fill in the blank: Photosynthesis occurs in the _____.",
+    answer: { accepted: ["chloroplast"] }, source_index: 1,
+    source_quote: "Photosynthesis occurs in the chloroplast.",
+  }, "fill_blank", sources);
+  assert.equal(result.valid, true);
+});
+
+test("rejects a fill-blank prompt that has no blank to complete", () => {
+  const result = validateGroundedQuestion({
+    type: "fill_blank", prompt: "Where does photosynthesis occur?",
+    answer: { accepted: ["chloroplast"] }, source_index: 1,
+    source_quote: "Photosynthesis occurs in the chloroplast.",
+  }, "fill_blank", sources);
+  assert.equal(result.valid, false);
+  assert.match(result.reason || "", /must contain a _____ blank/);
+});
+
+test("rejects a fill-blank answer that restates a whole sentence", () => {
+  const result = validateGroundedQuestion({
+    type: "fill_blank", prompt: "Fill in the blank: _____",
+    answer: { accepted: ["Chlorophyll absorbs red light and blue light. Mitochondria release energy from food."] },
+    source_index: 1,
+    source_quote: "Chlorophyll absorbs red light and blue light. Mitochondria release energy from food.",
+  }, "fill_blank", sources);
+  assert.equal(result.valid, false);
+  assert.match(result.reason || "", /word or short phrase/);
+});
+
+test("rejects matching terms that are stray function words", () => {
+  const result = validateGroundedQuestion({
+    type: "matching", prompt: "Match each term with its corresponding statement.",
+    options: {
+      // "The" is extraction debris, not a concept a student can match.
+      left: ["The", "Stomata"],
+      right: ["regulate gas exchange", "occurs in the chloroplast"],
+    },
+    answer: { pairs: [[0, 1], [1, 0]] }, source_index: 1,
+    source_quote: "Photosynthesis occurs in the chloroplast.",
+  }, "matching", sources);
+  assert.equal(result.valid, false);
+  assert.match(result.reason || "", /real concepts/);
 });

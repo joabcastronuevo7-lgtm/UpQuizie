@@ -153,9 +153,19 @@ export function validateGroundedQuestion(
       }
     }
   } else if (expectedType === "fill_blank") {
+    // A fill-in-the-blank with no blank is really a short-answer question, and
+    // the student UI renders no gap to complete.
+    if (!/_{3,}/.test(question.prompt)) {
+      return { valid: false, reason: "fill-blank prompt must contain a _____ blank" };
+    }
     const accepted = stringArray(answer?.accepted);
     if (!accepted || accepted.some((value) => !appearsIn(value, quote))) {
       return { valid: false, reason: "every accepted answer must occur in its evidence quote" };
+    }
+    // The blank stands for a word or short phrase; a full sentence means the
+    // model restated the source instead of removing one key term.
+    if (accepted.some((value) => value.trim().split(/\s+/).length > 8)) {
+      return { valid: false, reason: "a fill-blank answer must be a word or short phrase" };
     }
   } else if (expectedType === "matching") {
     const options: any = question.options;
@@ -167,6 +177,15 @@ export function validateGroundedQuestion(
     }
     if ([...left, ...right].some((value) => !appearsIn(value, source.text))) {
       return { valid: false, reason: "every matching item must occur in its cited document chunk" };
+    }
+    // Reject terms that are extraction debris rather than concepts: bare
+    // function words ("This"), and PDF layout artifacts ("... PAGE 12").
+    const FUNCTION_WORD = /^(?:this|that|these|those|the|a|an|it|its|and|or|for|with|from|each|such|then|when|which|there|here)$/i;
+    if (left.some((value) => {
+      const term = value.trim();
+      return term.length < 3 || FUNCTION_WORD.test(term) || /\bpage\b\s*\d*$/i.test(term);
+    })) {
+      return { valid: false, reason: "matching terms must be real concepts, not stray words or layout artifacts" };
     }
     const usedLeft = new Set<number>();
     const usedRight = new Set<number>();

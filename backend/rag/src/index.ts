@@ -4,6 +4,7 @@ import { insertChunks, search, getClient, deleteByDocument, deleteBySubject } fr
 import { extractText } from "./extract.js";
 import { query, ensureSchema } from "./db.js";
 import { deriveEvidenceQuote, GroundingSource, validateGroundedQuestion } from "./grounding.js";
+import { jsonSchemaFor } from "./schema.js";
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
@@ -346,11 +347,16 @@ function deterministicQuestion(item: DistItem, source: GroundingSource, ordinal:
       }).filter((pair) => pair.right.split(/\s+/).length >= 4)
         .filter((pair, index, all) => all.findIndex((item) => item.right.toLowerCase() === pair.right.toLowerCase()) === index);
     }
-    // Drop any pair whose statement still names its own term, and any whose
-    // statement is too short to describe anything (PDF extraction crumbs).
-    allPairs = allPairs.filter((pair) =>
-      pair.right.split(/\s+/).length >= 4 &&
-      !pair.right.toLowerCase().includes(pair.left.toLowerCase()));
+    // Drop any pair whose statement still names its own term, whose statement
+    // is too short to describe anything, or whose term is extraction debris
+    // rather than a concept (mirrors the matching rules in grounding.ts).
+    const FUNCTION_WORD = /^(?:this|that|these|those|the|a|an|it|its|and|or|for|with|from|each|such|then|when|which|there|here)$/i;
+    allPairs = allPairs.filter((pair) => {
+      const term = pair.left.trim();
+      return term.length >= 3 && !FUNCTION_WORD.test(term) && !/\bpage\b\s*\d*$/i.test(term) &&
+        pair.right.split(/\s+/).length >= 4 &&
+        !pair.right.toLowerCase().includes(term.toLowerCase());
+    });
     if (allPairs.length < 2) return null;
     // Rotate through the available pairs so successive ordinals produce
     // different valid sets instead of sliding past the end of the list.
@@ -597,7 +603,7 @@ ${question.options.map((option: string, index: number) => `${String.fromCharCode
 
     const prompt = `You are an expert educational assessment generator. Write up to ${want} DISTINCT ${item.difficulty} ${item.type} questions${topicFocus ? ` about "${topicFocus}"` : ""}, using ONLY the uploaded source excerpts below.
 
-Return ONLY a JSON array containing no more than ${want} objects. Each object must have this schema:
+Return ONLY a JSON object of the form {"questions": [ ... ]} containing no more than ${want} question objects. Each question object must have this schema:
 ${schemaFor(item.type, item.difficulty)}
 
 Rules:
@@ -634,7 +640,7 @@ Rules:
 - If the excerpts cannot support a valid question, return fewer objects. Do not invent content or placeholders.
 - All questions must be different from each other.
 - Before responding, silently verify that every item and answer is supported, every MCQ has exactly four options and one correct answer, and the set covers different parts of the supplied content.
-- Output a valid JSON array only. No prose or markdown.
+- Output a valid JSON object with a "questions" array only. No prose or markdown.
 
 Required internal workflow (perform silently before producing JSON):
 1. Read every supplied source excerpt completely.
@@ -649,7 +655,8 @@ Uploaded source excerpts:
 ${renderSources(sources)}`;
     try {
       const output = await chat(prompt, {
-        json: true, temperature: 0.25, numPredict: Math.min(2048, want * 230 + 200),
+        schema: jsonSchemaFor(item.type, item.difficulty, want),
+        temperature: 0.25, numPredict: Math.min(2048, want * 230 + 200),
       });
       return { questions: toQuestionArray(extractJSON(output)), sources };
     } catch (e) {
