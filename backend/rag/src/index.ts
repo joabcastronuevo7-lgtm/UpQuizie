@@ -350,7 +350,7 @@ function deterministicQuestion(item: DistItem, source: GroundingSource, ordinal:
     // Drop any pair whose statement still names its own term, whose statement
     // is too short to describe anything, or whose term is extraction debris
     // rather than a concept (mirrors the matching rules in grounding.ts).
-    const FUNCTION_WORD = /^(?:this|that|these|those|the|a|an|it|its|and|or|for|with|from|each|such|then|when|which|there|here)$/i;
+    const FUNCTION_WORD = /^(?:this|that|these|those|the|a|an|it|its|and|or|for|with|from|each|such|then|when|which|there|here|where|what|how|why|who|is|are|was|were|be|of|in|on|at|to|by|as|if|but|not)$/i;
     allPairs = allPairs.filter((pair) => {
       const term = pair.left.trim();
       return term.length >= 3 && !FUNCTION_WORD.test(term) && !/\bpage\b\s*\d*$/i.test(term) &&

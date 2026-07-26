@@ -180,7 +180,7 @@ export function validateGroundedQuestion(
     }
     // Reject terms that are extraction debris rather than concepts: bare
     // function words ("This"), and PDF layout artifacts ("... PAGE 12").
-    const FUNCTION_WORD = /^(?:this|that|these|those|the|a|an|it|its|and|or|for|with|from|each|such|then|when|which|there|here)$/i;
+    const FUNCTION_WORD = /^(?:this|that|these|those|the|a|an|it|its|and|or|for|with|from|each|such|then|when|which|there|here|where|what|how|why|who|is|are|was|were|be|of|in|on|at|to|by|as|if|but|not)$/i;
     if (left.some((value) => {
       const term = value.trim();
       return term.length < 3 || FUNCTION_WORD.test(term) || /\bpage\b\s*\d*$/i.test(term);
