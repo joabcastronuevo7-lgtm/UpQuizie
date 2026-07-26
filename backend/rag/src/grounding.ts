@@ -176,6 +176,9 @@ export function validateGroundedQuestion(
           usedLeft.has(pair[0]) || usedRight.has(pair[1])) {
         return { valid: false, reason: "matching pairs must form a valid one-to-one mapping" };
       }
+      if (normalized(right[pair[1]]).includes(normalized(left[pair[0]]))) {
+        return { valid: false, reason: "a matching statement must not contain the term it matches" };
+      }
       usedLeft.add(pair[0]);
       usedRight.add(pair[1]);
     }

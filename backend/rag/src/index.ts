@@ -306,13 +306,24 @@ function deterministicQuestion(item: DistItem, source: GroundingSource, ordinal:
   if (item.type === "matching") {
     let allPairs = documentPairs(source.text);
     if (allPairs.length < 2) {
-      allPairs = phrases.map((phrase) => ({
-        left: phrase,
-        right: conciseEvidence(source.text, phrase),
-        evidence: conciseEvidence(source.text, phrase),
-      })).filter((pair) => pair.right.split(/\s+/).length >= 4)
+      allPairs = phrases.map((phrase) => {
+        const evidence = conciseEvidence(source.text, phrase);
+        // The right side must not contain the term it matches, or the answer
+        // gives itself away. Keep only the text after the term (still a
+        // verbatim substring of the chunk, so grounding validation holds).
+        const at = evidence.toLowerCase().indexOf(phrase.toLowerCase());
+        const remainder = at >= 0
+          ? evidence.slice(at + phrase.length).replace(/^[^A-Za-z0-9(]+/, "").trim()
+          : evidence;
+        return { left: phrase, right: remainder, evidence };
+      }).filter((pair) => pair.right.split(/\s+/).length >= 4)
         .filter((pair, index, all) => all.findIndex((item) => item.right.toLowerCase() === pair.right.toLowerCase()) === index);
     }
+    // Drop any pair whose statement still names its own term, and any whose
+    // statement is too short to describe anything (PDF extraction crumbs).
+    allPairs = allPairs.filter((pair) =>
+      pair.right.split(/\s+/).length >= 4 &&
+      !pair.right.toLowerCase().includes(pair.left.toLowerCase()));
     if (allPairs.length < 2) return null;
     // Rotate through the available pairs so successive ordinals produce
     // different valid sets instead of sliding past the end of the list.
@@ -592,6 +603,7 @@ Rules:
 - For fill-blank, replace exactly one important word or short phrase with _____. There must be only one correct answer.
 - For essay, ask students to explain a concept discussed in the source and provide a rubric containing the key points expected in a correct answer.
 - For matching, match source terms with their definitions; every left and right item must be supported by the cited SOURCE.
+- For matching, a right-side statement must never contain or name its matched left-side term; describe it without repeating it, or the answer is given away.
 - For fill-blank, every accepted answer must appear verbatim in source_quote.
 - If the excerpts cannot support a valid question, return fewer objects. Do not invent content or placeholders.
 - All questions must be different from each other.
