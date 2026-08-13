@@ -110,6 +110,38 @@ func normalizeModuleLabel(value string) string {
 	return value
 }
 
+func renameModule(c *gin.Context) {
+	var req struct {
+		From string `json:"from"`
+		To   string `json:"to"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	from := normalizeModuleLabel(req.From)
+	to := normalizeModuleLabel(req.To)
+	if strings.TrimSpace(req.To) == "" {
+		c.JSON(400, gin.H{"error": "module name is required"})
+		return
+	}
+	if from == to {
+		c.JSON(200, gin.H{"ok": true, "updated": 0, "module_label": to})
+		return
+	}
+
+	tag, err := db.Exec(context.Background(),
+		`UPDATE uploaded_documents
+		 SET module_label=$3
+		 WHERE subject_id=$1 AND module_label=$2`,
+		c.Param("id"), from, to)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true, "updated": tag.RowsAffected(), "module_label": to})
+}
+
 // generationOptions supplies non-free-text generation controls. Topics are
 // extracted from uploaded-document labels/headings and previously validated
 // questions, while documents are limited to materials that finished indexing.
