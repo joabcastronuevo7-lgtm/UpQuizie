@@ -317,6 +317,9 @@ function SubjectMaterials({ subjectId, subjects }: { subjectId: string; subjects
                           <span className={`px-2 py-1 rounded-full text-xs font-bold capitalize ${statusStyle[d.status] || ""}`}>
                             {d.status}
                           </span>
+                          {d.status === "error" && d.error && (
+                            <p className="mt-1 max-w-xs text-xs text-error">{d.error}</p>
+                          )}
                         </td>
                         <td className="px-6 py-4 text-right">
                           <button

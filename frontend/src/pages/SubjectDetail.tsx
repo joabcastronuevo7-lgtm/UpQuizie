@@ -14,6 +14,16 @@ type QuestionDraft = {
   answer: any;
 };
 
+type StudentAttempt = {
+  id: string;
+  exam_id: string;
+  status: string;
+};
+
+type StudentPerformance = {
+  attempts: StudentAttempt[];
+};
+
 function asText(value: unknown): string {
   if (value == null) return "";
   if (typeof value === "string") return value;
@@ -56,11 +66,18 @@ export default function SubjectDetail() {
   });
 
   const canManage = user?.role === "educator" || user?.role === "admin";
+  const isStudent = user?.role === "student";
   const tab = searchParams.get("tab") === "grading" && canManage ? "grading" : "quizzes";
+  const { data: performance } = useQuery({
+    queryKey: ["me-performance"],
+    queryFn: () => api.get<StudentPerformance>("/me/performance"),
+    enabled: isStudent,
+  });
   const subject = subjects.find((item) => item.id === id);
   const subjectExams = exams.filter((exam) => exam.subject_id === id);
   const published = subjectExams.filter((exam) => exam.status === "published");
   const visibleExams = canManage ? subjectExams : published;
+  const attemptByExam = new Map((performance?.attempts || []).map((attempt) => [attempt.exam_id, attempt]));
   const activation = useMutation({
     mutationFn: ({ examId, active }: { examId: string; active: boolean }) => api.post(`/exams/${examId}/activation`, { active }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["exams"] }),
@@ -193,6 +210,8 @@ export default function SubjectDetail() {
             const open = previewId === exam.id;
             const endedLive = exam.exam_mode === "live" && exam.live_state === "ended";
             const nextActive = endedLive || exam.status !== "published";
+            const attempt = attemptByExam.get(exam.id);
+            const completedAttempt = attempt?.status && attempt.status !== "in_progress" ? attempt : null;
             return (
               <article key={exam.id} className="bg-surface-container-lowest border border-outline-variant rounded-xl overflow-hidden">
                 <div className="p-6 flex flex-col md:flex-row md:items-center gap-5">
@@ -203,7 +222,7 @@ export default function SubjectDetail() {
                     <div className="flex items-center gap-2 mb-1">
                       <h2 className="font-headline text-lg font-bold text-primary">{exam.title}</h2>
                       <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${exam.status === "published" ? "bg-green-100 text-green-800" : "bg-surface-container-high text-on-surface-variant"}`}>
-                        {endedLive ? "Ended" : exam.status === "published" ? "Active" : "Deactivated"}
+                        {completedAttempt ? "Completed" : endedLive ? "Ended" : exam.status === "published" ? "Active" : "Deactivated"}
                       </span>
                     </div>
                     <div className="flex flex-wrap gap-4 text-sm text-on-surface-variant">
@@ -214,7 +233,11 @@ export default function SubjectDetail() {
                     </div>
                   </div>
                   {user?.role === "student" ? (
-                    exam.starts_at && new Date(exam.starts_at).getTime() > Date.now() ? (
+                    completedAttempt ? (
+                      <Link to={`/attempts/${completedAttempt.id}/results`} className="bg-surface-container-high text-primary px-5 py-2.5 rounded-lg font-semibold flex items-center justify-center gap-2 hover:bg-surface-variant">
+                        Completed <Icon name="check_circle" className="text-[19px]" />
+                      </Link>
+                    ) : exam.starts_at && new Date(exam.starts_at).getTime() > Date.now() ? (
                       <button disabled className="bg-surface-container-high text-on-surface-variant px-5 py-2.5 rounded-lg font-semibold flex items-center justify-center gap-2">
                         Opens later
                       </button>
@@ -452,17 +475,17 @@ function PublishedAnswerEditor({ question, draft, onChange }: {
     const pairs: number[][] = Array.isArray(draft.answer?.pairs) ? draft.answer.pairs : [];
     return (
       <div className="space-y-3 rounded-lg border border-outline-variant bg-surface-container-low p-3">
-        <p className="text-[11px] font-bold uppercase tracking-wider text-on-surface-variant">Matching choices and correct pairs</p>
+        <p className="text-[11px] font-bold uppercase tracking-wider text-on-surface-variant">Matching columns and answer key</p>
         <div className="grid md:grid-cols-2 gap-3">
-          <ChoiceList title="Left choices" items={left} onChange={(items) => onChange({ options: { ...(draft.options || {}), left: items } })} />
-          <ChoiceList title="Right choices" items={right} onChange={(items) => onChange({ options: { ...(draft.options || {}), right: items } })} />
+          <ChoiceList title="Column A key terms" items={left} onChange={(items) => onChange({ options: { ...(draft.options || {}), left: items } })} />
+          <ChoiceList title="Column B definitions" items={right} onChange={(items) => onChange({ options: { ...(draft.options || {}), right: items } })} />
         </div>
         <div className="space-y-2">
           {left.map((item, leftIndex) => {
             const current = pairs.find(([l]) => l === leftIndex)?.[1] ?? "";
             return (
               <label key={leftIndex} className="grid md:grid-cols-[1fr_160px] gap-2 items-center text-sm">
-                <span className="truncate">{leftIndex + 1}. {item}</span>
+                <span className="truncate">___ {leftIndex + 1}. {item}</span>
                 <select
                   value={current}
                   onChange={(event) => {
