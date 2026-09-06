@@ -400,7 +400,7 @@ function PublishedAnswerEditor({ question, draft, onChange }: {
                 type="radio"
                 name={`published-answer-${question.id}`}
                 checked={correct === index}
-                onChange={() => onChange({ answer: { ...(draft.answer || {}), correct_index: index } })}
+                onChange={() => onChange({ answer: { correct_index: index } })}
               />
               <span className="text-xs font-bold text-on-surface-variant">{String.fromCharCode(65 + index)}</span>
               <input
